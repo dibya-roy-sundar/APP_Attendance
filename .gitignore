@@ -50,3 +50,6 @@ test/local/screens/
 
 # demo walkthrough captures
 test/local/demo-shots/
+
+# Scratch harnesses written during debugging.
+*.tmp.mjs
