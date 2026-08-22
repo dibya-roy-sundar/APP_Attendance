@@ -159,6 +159,45 @@ into the grid; tap through from memory or a paper list. Every mark lands as `✎
 A date that already has a session is refused, and the existing one is opened
 instead.
 
+### A student joins late
+
+**More → Roster → Add student.** Roll number and name are required, email is
+optional. They take the next `S.No`, so they land at the end of the roster and of
+the exported sheet rather than shifting everybody else's row, and classes already
+held stay blank for them — which is the truth.
+
+Adding students is the instructor's own operation; a deputy covering one class
+cannot change who is on the register.
+
+### Caching
+
+`students` is read on nearly every request and changes a handful of times a term,
+so `listStudents()` keeps it in memory for **30 seconds** and any write clears it.
+
+Thirty seconds, not thirty days. This runs as several serverless instances with no
+way to tell the others that a student was added, so a long TTL would mean an
+instance serving a roster that is wrong for as long as the TTL lasts. The
+instance that performs the write clears its own copy at once, so the admin who
+added someone always sees them immediately.
+
+Measured against Supabase from a laptop, roughly 300 ms per round trip:
+
+| | before | after |
+|---|---|---|
+| `GET /api/roster` | 1092 ms (611–1182) | **604 ms** (577–697) |
+| `POST /api/marks` | 1073 ms | **903 ms** |
+
+The roster gain was a surprise — those queries already run in `Promise.all`, so
+caching one was not expected to help. Removing it both lowered and steadied the
+time, which points at connection contention rather than the queries genuinely
+running in parallel.
+
+What caching does **not** fix: the grid re-sends all 47 student records every
+five seconds, 8.6 KB a poll, about 6 MB across an hour of class, almost all of it
+names and roll numbers that never change. Splitting the poll into a rarely
+fetched roster and a small marks-only payload is the larger win, and is a
+client-side change rather than a cache.
+
 ### Lost or wiped phone
 
 Tap **⋯** on the student's row → **Reset device**. That clears their binding and

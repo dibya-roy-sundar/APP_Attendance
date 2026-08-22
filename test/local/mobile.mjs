@@ -463,6 +463,21 @@ async function main() {
       }
     }
 
+    // The add-student form.
+    const more0 = page.getByRole('button', { name: 'More', exact: true }).first()
+    if (await more0.isVisible().catch(() => false)) {
+      await more0.click()
+      await page.waitForTimeout(250)
+      const addBtn = page.getByRole('button', { name: 'Add student' }).first()
+      if (await addBtn.isVisible().catch(() => false)) {
+        await addBtn.click()
+        await page.waitForTimeout(300)
+        await auditPage(page, 'add-student', phone)
+        await page.getByRole('button', { name: 'More', exact: true }).first().click()
+        await page.waitForTimeout(200)
+      }
+    }
+
     // Temporary access, which holds the roster picker.
     const more = page.getByRole('button', { name: 'More', exact: true }).first()
     if (await more.isVisible().catch(() => false)) {

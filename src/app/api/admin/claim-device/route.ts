@@ -1,6 +1,6 @@
 import { actorOf } from '@/lib/admin'
 import { fail, guardPrimary, normaliseDeviceId, ok, readJson } from '@/lib/api'
-import { audit, getStudentByDevice, getStudentByRollNo } from '@/lib/data'
+import { audit, getStudentByDevice, getStudentByRollNo, invalidateStudents } from '@/lib/data'
 import { env } from '@/lib/env'
 import { db } from '@/lib/supabase'
 
@@ -57,6 +57,7 @@ export async function POST(req: Request) {
     throw error
   }
 
+  invalidateStudents()
   await audit({
     action: 'CLAIM_DEVICE',
     studentId: data.id,

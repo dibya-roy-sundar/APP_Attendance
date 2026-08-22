@@ -1,6 +1,6 @@
 import { fail, isUuid, ok, readJson, guardPrimary } from '@/lib/api'
 import { actorOf } from '@/lib/admin'
-import { audit } from '@/lib/data'
+import { audit, invalidateStudents } from '@/lib/data'
 import { db } from '@/lib/supabase'
 
 /**
@@ -25,6 +25,7 @@ export async function POST(req: Request) {
   if (error) throw error
   if (!data) return fail('NO_STUDENT', 404)
 
+  invalidateStudents()
   await audit({
     action: 'RESET_DEVICE',
     studentId,

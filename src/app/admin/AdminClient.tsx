@@ -543,6 +543,10 @@ export function AdminClient() {
         onShowQr={() => setShowQr(true)}
         onSetOpen={setSessionOpen}
         onToggleEnrollment={toggleEnrollment}
+        onRosterChanged={async (message) => {
+          setNotice(message);
+          await load(selectedId);
+        }}
       />
 
       {!session && (

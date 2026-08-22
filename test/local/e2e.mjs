@@ -124,6 +124,7 @@ async function main() {
     ['/api/enrollment', 'POST', { open: true }],
     ['/api/reset-device', 'POST', { studentId: uuid() }],
     ['/api/grants', 'GET', undefined],
+    ['/api/students', 'POST', { rollNo: 'MT9999998', name: 'Nobody' }],
     ['/api/grants', 'POST', { label: 'x', hours: 2 }],
     ['/api/grants/revoke', 'POST', { grantId: uuid() }],
     ['/api/whoami', 'GET', undefined],
@@ -737,6 +738,89 @@ async function main() {
     !meShared.includes(rollA) && !meShared.includes(rollC)
   )
 
+  // ── adding a student mid-term ─────────────────────────────────────────────
+  console.log('\n— adding a student —')
+
+  for (const [label, body] of [
+    ['no name', { rollNo: 'MT2026901' }],
+    ['no roll number', { name: 'Asha Menon' }],
+    ['a blank name', { rollNo: 'MT2026901', name: '   ' }],
+    ['a wildcard in the roll number', { rollNo: 'MT20269%1', name: 'Asha Menon' }],
+    ['a space in the roll number', { rollNo: 'MT 2026901', name: 'Asha Menon' }],
+    ['a 300-character name', { rollNo: 'MT2026901', name: 'x'.repeat(300) }],
+    ['a malformed email', { rollNo: 'MT2026901', name: 'Asha Menon', email: 'not-an-email' }],
+  ]) {
+    const r = await api('/api/students', { method: 'POST', body, cookie: admin })
+    check(`${label} is refused`, r.status >= 400 && r.status < 500, `${r.status} ${JSON.stringify(r.data)}`)
+  }
+
+  const before = await count('students')
+  const added = await api('/api/students', {
+    method: 'POST',
+    body: { rollNo: 'MT2026901', name: 'Asha Menon', email: 'asha.menon@iiitb.ac.in' },
+    cookie: admin,
+  })
+  check('adding a student succeeds', added.status === 201, JSON.stringify(added.data))
+  const newStudent = added.data.student
+  check(
+    'they take the next sheet position, not somebody else\'s',
+    newStudent.sNo === before + 1,
+    `s_no ${newStudent.sNo} with ${before} students before`
+  )
+  check('the roster grew by one', (await count('students')) === before + 1)
+
+  const dupe2 = await api('/api/students', {
+    method: 'POST',
+    body: { rollNo: 'mt2026901', name: 'Someone Else' },
+    cookie: admin,
+  })
+  check(
+    'the same roll number in another case is refused',
+    dupe2.status === 409 && dupe2.data.error === 'ROLL_TAKEN',
+    JSON.stringify(dupe2.data)
+  )
+
+  // The cached roster must not hide them from the very next request.
+  const grewRoster = await api(`/api/roster?s=${session.id}`, { cookie: admin })
+  check(
+    'they appear in the roster immediately — the cache was invalidated',
+    grewRoster.data.students.some((s) => s.rollNo === 'MT2026901'),
+    `${grewRoster.data.total} students returned`
+  )
+  check('and the roster total reflects them', grewRoster.data.total === before + 1)
+
+  const markNew = await api('/api/marks', {
+    method: 'POST',
+    body: { sessionId: session.id, studentIds: [newStudent.studentId] },
+    cookie: admin,
+  })
+  check('a newly added student can be marked', markNew.data?.saved === 1, JSON.stringify(markNew.data))
+
+  const exportWithNew = await fetch(`${BASE}/api/export`, { headers: { cookie: admin } })
+  const newBuf = Buffer.from(await exportWithNew.arrayBuffer())
+  const { default: JSZipNew } = await import('jszip')
+  const zipNew = await JSZipNew.loadAsync(newBuf)
+  const sharedNew = await zipNew.file('xl/sharedStrings.xml').async('string')
+  check('they appear in the exported sheet', sharedNew.includes('MT2026901'))
+  check('and their name is there', sharedNew.includes('Asha Menon'))
+
+  const deputyAdd = await api('/api/students', {
+    method: 'POST',
+    body: { rollNo: 'MT2026902', name: 'Not Allowed' },
+    cookie: admin,
+  })
+  check('the admin may add a second one', deputyAdd.status === 201)
+
+  check(
+    'each addition is audited',
+    (await count('audit_log', 'action=eq.ADD_STUDENT')) === 2,
+    `${await count('audit_log', 'action=eq.ADD_STUDENT')} entries`
+  )
+
+  // Leave the roster as it was found.
+  await remove('students', 'roll_no=in.(MT2026901,MT2026902)')
+  check('the test cleans up after itself', (await count('students')) === before)
+
   // ── date-range export ─────────────────────────────────────────────────────
   console.log('\n— export by date range —')
 
@@ -926,6 +1010,7 @@ async function main() {
     ['/api/enrollment', { open: true }],
     ['/api/reset-device', { studentId: dRoster.data.students[0].studentId }],
     ['/api/grants', { label: 'onward', hours: 2 }],
+    ['/api/students', { rollNo: 'MT2026903', name: 'Deputy Added' }],
     ['/api/grants/revoke', { grantId }],
   ]) {
     const r = await api(path, { method: 'POST', body, cookie: deputy })

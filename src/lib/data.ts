@@ -100,13 +100,53 @@ export async function listSessions(): Promise<SessionRow[]> {
   return data ?? []
 }
 
+/*
+ * The roster is read on nearly every request but changes a handful of times a
+ * term, so it is worth not fetching 47 rows each time.
+ *
+ * The TTL is seconds, not days. This process is one serverless instance among
+ * several, and there is no way to tell the others that a student was added — so
+ * a long TTL would mean an instance serving a roster that is wrong for as long
+ * as the TTL lasts. Thirty seconds keeps every instance close to the truth
+ * without another moving part; the instance that performs a write clears its own
+ * copy immediately, so the admin who added someone always sees them.
+ *
+ * The honest gain is narrower than it looks: in `/api/roster` this query already
+ * runs in parallel with three others, so caching it saves nothing there. It pays
+ * off where the lookup is sequential — marking, enrolling, issuing access.
+ */
+const STUDENT_CACHE_MS = 30_000
+let studentCache: { rows: StudentRow[]; at: number } | null = null
+
+/** Called by anything that writes to `students`. */
+export function invalidateStudents(): void {
+  studentCache = null
+}
+
 export async function listStudents(): Promise<StudentRow[]> {
+  const now = Date.now()
+  if (studentCache && now - studentCache.at < STUDENT_CACHE_MS) {
+    return studentCache.rows
+  }
   const { data, error } = await db()
     .from('students')
     .select('*')
     .order('s_no', { ascending: true })
   if (error) throw error
-  return data ?? []
+  const rows = data ?? []
+  studentCache = { rows, at: now }
+  return rows
+}
+
+/** The next sheet position, so an added student lands at the end of the list. */
+export async function nextStudentNumber(): Promise<number> {
+  const { data, error } = await db()
+    .from('students')
+    .select('s_no')
+    .order('s_no', { ascending: false })
+    .limit(1)
+  if (error) throw error
+  return (data?.[0]?.s_no ?? 0) + 1
 }
 
 /** Longest roll number worth considering; anything longer is not a typo. */
