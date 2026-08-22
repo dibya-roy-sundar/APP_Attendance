@@ -352,7 +352,7 @@ on the 14th and the record disagrees, the log settles it in one conversation.
 ## Testing
 
 ```bash
-npm test        # unit: token windows and the export layout
+npm test         # unit: token windows and the export layout — touches no database
 npm run lint
 npm run typecheck
 ```
@@ -360,6 +360,35 @@ npm run typecheck
 The token helpers and the spreadsheet layout are covered by unit tests, including
 `w-1` acceptance, `w+1` rejection, and the `21 Aug 2026 → serial 46255` match
 against the instructor's original file.
+
+### The integration suites destroy real data
+
+> **There is one Supabase project.** The suites under `test/local/` talk to the
+> same database production uses, and each one opens by deleting attendance and
+> sessions and nulling every device binding. On a teaching day that erases the
+> register, and the `.xlsx` export is the only copy.
+
+They therefore refuse to run unless you say so:
+
+```bash
+set -a; . ./.env.local; set +a
+export ATT_ALLOW_DB_WIPE=1
+
+node test/local/e2e.mjs                  # API contracts, auth, idempotency
+node test/local/edge.mjs                 # real-world edge cases
+node test/local/browser.mjs              # WebKit + Chromium: sign-in, QR, storage-denied
+node test/local/mobile.mjs --theme dark  # 6 devices: overflow, tap targets, contrast
+node test/local/mobile.mjs --theme light
+node test/local/load.mjs                 # 47 concurrent scans, tap storms
+node test/local/demo.mjs                 # watchable walkthrough in two phone windows
+```
+
+`select` and `count` are deliberately left unguarded, so you can inspect the
+database without the flag. Only `patch` and `remove` are gated — see
+[`test/local/db.mjs`](test/local/db.mjs).
+
+**Before a class, export the register.** There are no database backups on the
+Supabase free tier, so the spreadsheet is the backup.
 
 ### Theme
 
