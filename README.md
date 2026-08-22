@@ -351,8 +351,33 @@ runs Postgres and PostgREST locally, for testing without a Supabase project.
 
 ## Deploying
 
-Push to a Git repo, import it in Vercel, and set the four environment variables
-from `.env.example` in the project settings. No build configuration is needed.
+Live at **https://app-attendance-lilac.vercel.app**.
+
+```bash
+vercel link
+vercel env add SUPABASE_URL production          # and preview
+vercel env add SUPABASE_SERVICE_ROLE_KEY production
+vercel env add ADMIN_PASSWORD production
+vercel env add CLASS_TIMEZONE production
+vercel env add ADMIN_ROLL_NO production
+vercel deploy --prod
+```
+
+Four things that are easy to get wrong here:
+
+- **Turn Deployment Protection off.** New Vercel projects enable Vercel
+  Authentication, which redirects every request to an SSO login — students
+  scanning the QR would hit a Vercel login wall instead of the attendance page.
+  The admin side has its own password and every admin endpoint returns 401
+  without a cookie, so the deployment itself must be publicly reachable.
+- **Environment variables only apply to new deployments.** Changing one —
+  `ADMIN_PASSWORD`, say — needs a redeploy before it takes effect.
+- **The git commit author must be a member of the Vercel team**, or the
+  deployment comes back `BLOCKED` rather than failing loudly. Check with
+  `git log -1 --format=%ae` against the team's members.
+- **Changing `ADMIN_PASSWORD` signs out every admin** and invalidates every
+  outstanding deputy code, because both cookies are signed with it. That is the
+  intended behaviour, and it is also how you revoke access in a hurry.
 
 ## Deliberately out of scope
 
