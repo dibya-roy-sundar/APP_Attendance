@@ -2,6 +2,7 @@
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Spinner } from "@/components/Spinner";
+import { deviceId } from "@/lib/device";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Controls } from "./Controls";
 import { QrPanel } from "./QrPanel";
@@ -12,7 +13,6 @@ type Student = {
   rollNo: string;
   name: string;
   enrolled: boolean;
-  passkeys: number;
   markedAt: string | null;
   source: "scan" | "manual" | null;
   isSelf: boolean;
@@ -298,6 +298,33 @@ export function AdminClient() {
   }
 
   /**
+   * Links this phone to the admin's own student record.
+   *
+   * An admin with a single device cannot scan a QR their own screen is showing,
+   * so this is the way in. The server decides which student it binds, from
+   * ADMIN_ROLL_NO.
+   */
+  async function claimThisDevice() {
+    setMenuFor(null);
+    const { ok, data } = await post("/api/admin/claim-device", {
+      deviceId: deviceId(),
+    });
+    const err = (data as { error?: string; name?: string }).error;
+    setNotice(
+      ok
+        ? (data as { status: string; name: string }).status === "ALREADY_LINKED"
+          ? "This phone is already linked to you."
+          : `This phone is now linked to you. Scanning will mark you present.`
+        : err === "NO_ADMIN_ROLL"
+          ? "Set ADMIN_ROLL_NO to your roll number first."
+          : err === "DEVICE_ALREADY_BOUND"
+            ? `This phone already belongs to ${(data as { name?: string }).name ?? "another student"}.`
+            : "Could not link this phone.",
+    );
+    if (ok) await load(selectedId);
+  }
+
+  /**
    * Writes every staged student in one request.
    *
    * The endpoint only inserts, so saving twice is harmless and a student who
@@ -361,6 +388,19 @@ export function AdminClient() {
       ok
         ? `${student.name} is no longer marked present.`
         : "Could not remove that mark.",
+    );
+    if (ok) await load(selectedId);
+  }
+
+  async function resetDevice(student: Student) {
+    setMenuFor(null);
+    const { ok } = await post("/api/reset-device", {
+      studentId: student.studentId,
+    });
+    setNotice(
+      ok
+        ? `${student.name} can register a new phone on the next scan.`
+        : "Could not reset that device.",
     );
     if (ok) await load(selectedId);
   }
@@ -552,8 +592,11 @@ export function AdminClient() {
                 {menuFor === s.studentId && (
                   <RowMenu
                     student={s}
+                    role={roster.role}
                     busy={busy}
                     onClose={() => setMenuFor(null)}
+                    onReset={() => void resetDevice(s)}
+                    onClaim={() => void claimThisDevice()}
                     onUnmark={() => requestUnmark(s)}
                   />
                 )}
@@ -662,8 +705,11 @@ export function AdminClient() {
                   {menuFor === s.studentId && (
                     <RowMenu
                       student={s}
+                      role={roster.role}
                       busy={busy}
                       onClose={() => setMenuFor(null)}
+                      onReset={() => void resetDevice(s)}
+                      onClaim={() => void claimThisDevice()}
                     />
                   )}
                 </li>
@@ -722,13 +768,19 @@ function SelfBadge() {
  */
 function RowMenu({
   student,
+  role,
   busy,
   onClose,
+  onReset,
+  onClaim,
   onUnmark,
 }: {
   student: Student;
+  role: "primary" | "deputy";
   busy: boolean;
   onClose: () => void;
+  onReset: () => void;
+  onClaim: () => void;
   onUnmark?: () => void;
 }) {
   return (
@@ -742,19 +794,31 @@ function RowMenu({
           Unmark
         </button>
       )}
-      {/*
-        "Reset device" is gone, and so is "Register this phone".
-        Device resets existed because identity was a UUID in this browser: lose
-        it and only an admin could unstick you. A passkey lives in the phone's
-        OS keychain, so a student re-links themselves by scanning and touching
-        the sensor — no admin, and nothing here to reset. The old handlers are
-        preserved in docs/superseded/AdminClient.with-device-reset.tsx.
-      */}
       <span className="inline-flex min-h-11 items-center px-1 text-slate-500 dark:text-slate-400">
-        {student.enrolled
-          ? `${student.passkeys} passkey${student.passkeys === 1 ? "" : "s"}`
-          : "No passkey yet"}
+        {student.enrolled ? "Phone registered" : "No phone registered"}
       </span>
+      {role === "primary" ? (
+        <button
+          onClick={onReset}
+          disabled={busy || !student.enrolled}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-40 dark:border-slate-700"
+        >
+          Reset device
+        </button>
+      ) : (
+        <span className="text-xs text-slate-500 dark:text-slate-400">
+          Only the admin can reset a device.
+        </span>
+      )}
+      {student.isSelf && role === "primary" && (
+        <button
+          onClick={onClaim}
+          disabled={busy}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-40 dark:border-slate-700"
+        >
+          {student.enrolled ? "Re-link this phone" : "Register this phone"}
+        </button>
+      )}
       <button
         onClick={onClose}
         className="inline-flex min-h-11 items-center px-1 text-slate-500 dark:text-slate-400"

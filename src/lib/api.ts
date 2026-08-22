@@ -55,19 +55,20 @@ export function isDeviceId(v: unknown): v is string {
   return typeof v === 'string' && UUID.test(v)
 }
 
-/**
- * Validates a device id and folds it to lowercase, or returns null.
+/*
+ * SUPERSEDED BY PASSKEYS — kept for the record, called by nothing.
  *
- * The fold matters: the UUID pattern is case-insensitive but Postgres equality
- * and the unique index on `students.device_id` are not. Without normalising,
- * `ABC…` would pass validation, fail to match the stored `abc…`, and — with the
- * binding cleared — let one phone claim a second student. `randomUUID()`
- * only ever emits lowercase, so this is a guard against drift rather than a live
- * defect.
+ * Device ids were UUIDs, and this folded them to lowercase before comparison.
+ * The fold mattered because the UUID pattern is case-insensitive while Postgres
+ * equality and the unique index on students.device_id are not: without it,
+ * `ABC…` would validate, fail to match the stored `abc…`, and let one phone
+ * claim a second student. It is recorded here because that class of bug —
+ * a validator and a comparison disagreeing about case — is easy to reintroduce.
+ *
+ * export function normaliseDeviceId(v: unknown): string | null {
+ *   return isDeviceId(v) ? v.toLowerCase() : null
+ * }
  */
-export function normaliseDeviceId(v: unknown): string | null {
-  return isDeviceId(v) ? v.toLowerCase() : null
-}
 
 export function isUuid(v: unknown): v is string {
   return isDeviceId(v)

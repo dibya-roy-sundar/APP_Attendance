@@ -1,6 +1,6 @@
-import { fail, normaliseDeviceId, readJson } from '@/lib/api'
-import { readDeviceCookie } from '@/lib/device-cookie'
-import { getStudentByDevice, listSessions } from '@/lib/data'
+import { fail } from '@/lib/api'
+import { readStudentSession } from '@/lib/student-session'
+import { getStudentById, listSessions } from '@/lib/data'
 import { buildWorkbook, exportFilename } from '@/lib/export'
 import { db } from '@/lib/supabase'
 
@@ -8,17 +8,15 @@ const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 
 /** The same sheet layout, containing exactly one student: the caller's own row. */
 export async function POST(req: Request) {
-  const deviceId = normaliseDeviceId((await readJson(req)).deviceId)
-  // The httpOnly cookie is the durable copy: Safari purges script-writable
-  // storage after about a week idle, so localStorage may be gone while the
-  // student is still perfectly well bound.
-  const cookieId = readDeviceCookie(req)
-  if (!deviceId && !cookieId) return fail('NOT_REGISTERED', 404)
+  // Identity comes from the passkey session, established the last time this
+  // student confirmed with Face ID or a fingerprint. Reading a record is not
+  // marking attendance, so a session is enough here — /api/passkey/auth/verify
+  // is the only thing that can record presence, and it always demands a fresh
+  // assertion plus a live token.
+  const studentId = readStudentSession(req)
+  if (!studentId) return fail('NOT_REGISTERED', 404)
 
-  let student = deviceId ? await getStudentByDevice(deviceId) : null
-  if (!student && cookieId && cookieId !== deviceId) {
-    student = await getStudentByDevice(cookieId)
-  }
+  const student = await getStudentById(studentId)
   if (!student) return fail('NOT_REGISTERED', 404)
 
   const [sessions, marks] = await Promise.all([

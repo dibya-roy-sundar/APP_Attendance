@@ -30,7 +30,10 @@ export type RosterEntry = {
   sNo: number
   rollNo: string
   name: string
+  /** True when they hold at least one passkey. */
   enrolled: boolean
+  /** How many passkeys — one per device they have set up. */
+  passkeys: number
   markedAt: string | null
   source: 'scan' | 'manual' | null
   /** True for the instructor's own row — they are one of the 47. */
@@ -160,6 +163,18 @@ export const MAX_ROLL_LENGTH = 32
  * caller enrol as them. Matching 47 rows in memory removes that entire class of
  * bug rather than trying to escape around it.
  */
+/** By primary key. Used after a passkey names its owner via userHandle. */
+export async function getStudentById(id: string): Promise<StudentRow | null> {
+  if (!isUuidish(id)) return null
+  const { data, error } = await db().from('students').select('*').eq('id', id).maybeSingle()
+  if (error) throw error
+  return data
+}
+
+function isUuidish(v: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
+}
+
 export async function getStudentByRollNo(rollNo: string): Promise<StudentRow | null> {
   const target = rollNo.trim().toLowerCase()
   if (!target || target.length > MAX_ROLL_LENGTH) return null
@@ -189,15 +204,35 @@ export async function getStudentByRollNo(rollNo: string): Promise<StudentRow | n
   return data
 }
 
-export async function getStudentByDevice(deviceId: string): Promise<StudentRow | null> {
-  const { data, error } = await db()
-    .from('students')
-    .select('*')
-    .eq('device_id', deviceId)
-    .maybeSingle()
-  if (error) throw error
-  return data
-}
+/*
+ * SUPERSEDED BY PASSKEYS — kept for the record, called by nothing.
+ *
+ * This was the whole of identity: a random UUID the browser generated once and
+ * kept in localStorage, looked up here to decide who was scanning. It failed in
+ * three ways that no amount of care in this function could fix.
+ *
+ *   1. Safari deletes script-writable storage after about seven days of browser
+ *      use without interaction on the site. A weekly class sits exactly on that
+ *      boundary, so the roster would silently lose its bindings between classes.
+ *   2. An installed home-screen web app on iOS gets its own storage container,
+ *      so the same phone could hold two unrelated identities and only one of
+ *      them could own the roll number.
+ *   3. Anything the browser can read, the student can copy and send to a friend.
+ *
+ * A passkey lives in the OS keychain instead, survives all three, and cannot be
+ * forwarded because the private key is non-extractable. See README, "Why
+ * identity moved from localStorage to a cookie to passkeys".
+ *
+ * export async function getStudentByDevice(deviceId: string): Promise<StudentRow | null> {
+ *   const { data, error } = await db()
+ *     .from('students')
+ *     .select('*')
+ *     .eq('device_id', deviceId)
+ *     .maybeSingle()
+ *   if (error) throw error
+ *   return data
+ * }
+ */
 
 /**
  * All 47 students, in sheet order, annotated with their mark for this session.
@@ -213,14 +248,23 @@ export async function getRoster(
    */
   markSelf = false
 ): Promise<RosterEntry[]> {
-  const [students, marks] = await Promise.all([
+  const [students, marks, credentials] = await Promise.all([
     listStudents(),
     sessionId
       ? db().from('attendance').select('student_id, marked_at, source').eq('session_id', sessionId)
       : Promise.resolve({ data: [], error: null } as const),
+    // How many passkeys each student holds. Counted rather than treated as a
+    // boolean because a student may register one per device, and seeing "2
+    // passkeys" is how an admin can tell a phone change from a problem.
+    db().from('student_credentials').select('student_id'),
   ])
   if (marks.error) throw marks.error
+  if (credentials.error) throw credentials.error
   const byStudent = new Map(marks.data?.map((m) => [m.student_id, m]) ?? [])
+  const passkeyCount = new Map<string, number>()
+  for (const c of credentials.data ?? []) {
+    passkeyCount.set(c.student_id, (passkeyCount.get(c.student_id) ?? 0) + 1)
+  }
   const selfRoll = env.adminRollNo?.toLowerCase() ?? null
   return students.map((s) => {
     const mark = byStudent.get(s.id)
@@ -229,7 +273,10 @@ export async function getRoster(
       sNo: s.s_no,
       rollNo: s.roll_no,
       name: s.name,
-      enrolled: s.device_id !== null,
+      // "Enrolled" now means "holds at least one passkey". The old meaning —
+      // students.device_id being non-null — is superseded; see docs/superseded/.
+      passkeys: passkeyCount.get(s.id) ?? 0,
+      enrolled: (passkeyCount.get(s.id) ?? 0) > 0,
       markedAt: mark?.marked_at ?? null,
       source: (mark?.source as 'scan' | 'manual' | undefined) ?? null,
       isSelf: markSelf && selfRoll !== null && s.roll_no.toLowerCase() === selfRoll,

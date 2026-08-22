@@ -3,7 +3,6 @@
 import { Spinner } from "@/components/Spinner";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { deviceId } from "@/lib/device";
 import { useEffect, useState } from "react";
 import { Calendar, type Day } from "./Calendar";
 type Me = {
@@ -71,7 +70,8 @@ export function MeClient() {
         const res = await fetch("/api/me", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ deviceId: deviceId() }),
+          // Nothing to send: the passkey session cookie identifies them.
+          body: "{}",
         });
         if (cancelled) return;
         if (res.status === 404) return setState({ kind: "unknown" });

@@ -23,9 +23,26 @@ no auth library — the admin is a single password in an env var.
 In the Supabase SQL editor, run [`supabase/schema.sql`](supabase/schema.sql).
 It is idempotent, so re-running it is safe.
 
-If your database predates the configurable QR rotation, run
-[`supabase/migrations/001_configurable_window.sql`](supabase/migrations/001_configurable_window.sql)
-as well — or just re-run `schema.sql`, which now carries the same `alter table`.
+Then run every file in [`supabase/migrations/`](supabase/migrations/) in
+numeric order. They are additive and safe to re-run:
+
+| Migration | What it does |
+|---|---|
+| `001_configurable_window.sql` | admin-chosen QR rotation period |
+| `002_temporary_access.sql` | deputy access codes |
+| `003_drop_settings_and_reset_allowed.sql` | removes the registration window's storage |
+| `004_passkeys.sql` | **required** — `student_credentials` and `webauthn_challenges` |
+
+`004` is not optional: passkeys are how students are identified, so without
+those two tables nobody can be marked present. It leaves `students.device_id`
+and `students.enrolled_at` in place — nothing reads them any more, but the
+previous term's bindings stay readable if a question is ever asked. See
+[`docs/superseded/`](docs/superseded/).
+
+**Before students register, settle your final hostname.** A passkey is bound to
+its domain, so moving from `*.vercel.app` to a real domain later invalidates
+every passkey and the whole class has to register again. Set `APP_ORIGIN` to the
+domain you intend to keep.
 
 ### 2. Configure the app
 
@@ -158,16 +175,18 @@ instead.
 
 ### Registration, and why there is no window
 
-A phone we do not recognise is always offered registration. There used to be an
+A phone with no passkey is always offered registration. There used to be an
 admin-controlled window; it was removed deliberately.
 
 It only ever defended against somebody claiming an **unclaimed** roll number
 unilaterally, and that case is self-correcting: the real student is told the
-number is taken, tells the admin, and **Reset device** frees it. It gave no
-protection at all against the case that actually has a motive — a student
-registering honestly and then handing their device id to a friend — because that
-needs no window at all. So the toggle, the timer, the countdown and the banner
-were machinery guarding a narrow, recoverable case, and they are gone.
+number is taken and the admin sorts it out. It gave no protection against the
+case that actually has a motive, because that needs no window at all. So the
+toggle, the timer, the countdown and the banner were machinery guarding a
+narrow, recoverable case, and they are gone.
+
+What authorises registration instead is **presence**: creating a passkey
+requires a live QR token, which only exists on the projector in the room.
 
 What is left is honest about its limits. Within a class, anyone holding a live QR
 token can claim any roll number nobody has claimed yet. That is accepted: the
@@ -215,15 +234,22 @@ client-side change rather than a cache.
 
 ### Lost or wiped phone
 
-Tap **⋯** on the student's row → **Reset device**. That clears their binding so
-they can register a new phone.
+**Nothing for the admin to do.** This used to be a button — **Reset device** —
+and removing it was most of the point of moving to passkeys.
 
-Two things it deliberately does not do. **It does not touch attendance** — those
-rows key on `student_id` and carry their own `device_id` snapshot, so the history
-of who was marked present survives intact. And it **records what it cleared**:
-the device id and the time it had been registered go into the audit entry before
-the fields are nulled. Otherwise the act of fixing the problem would destroy the
-only evidence of what the problem was.
+A student on a new phone in the same ecosystem already has their passkey: it
+syncs through iCloud Keychain or Google Password Manager. A student switching
+between ecosystems, or on a phone with no passkey yet, scans the QR, enters
+their roll number once, and creates a second passkey. `student_credentials` is
+one-to-many precisely so that works without anyone's permission.
+
+Attendance is never affected either way: those rows key on `student_id`, so the
+record of who was present survives any number of device changes.
+
+The only case still needing the admin is a phone too old for passkeys — below
+iOS 16 or Android 9 — and the answer there is to tap that student on the grid
+and mark them by hand. That is deliberate: a weaker second sign-in path would
+just become the one worth attacking.
 
 ### What a student sees
 
@@ -255,6 +281,152 @@ Postgres on every request.
 write a plain `✓` — provenance stays out of this file so it remains diffable
 against the instructor's own copy.
 
+## Why identity moved from localStorage, to a cookie, to passkeys
+
+This changed three times. Each step was forced by a specific failure, and the
+alternatives that look obvious were each rejected for a concrete reason. The
+superseded code is preserved under [`docs/superseded/`](docs/superseded/).
+
+### 1. A UUID in localStorage — the original design
+
+On first scan the browser generated `crypto.randomUUID()`, kept it in
+`localStorage`, and the server mapped it to a roll number. One phone, one
+student, nothing to type after the first time.
+
+It broke for three separate reasons:
+
+**Safari deletes it.** Intelligent Tracking Prevention removes script-writable
+storage — `localStorage`, IndexedDB, cookies written by JavaScript — after
+roughly seven days of browser use without interaction on the site. **A weekly
+class sits exactly on that boundary.** Reproduced on WebKit: register in week
+one, purge, scan in week two, and the student was offered registration afresh
+and then told *"that roll number is already registered on another phone"*. It
+was their own phone. Every student, every week, needing an admin reset.
+
+**An installed web app cannot see it.** iOS gives a home-screen web app its own
+storage container. Register in Safari and the installed app sees nothing, and
+vice versa — the same phone holding two unrelated identities, only one of which
+can own the roll number. Worse, on iOS a QR scanned from the Camera app opens
+the *default browser*, never the installed app, so a student who installed the
+app could never scan into the container holding their binding.
+
+**Anything the browser can read, a student can send.** The UUID was a bearer
+token in readable storage.
+
+### 2. Adding an httpOnly cookie — a real fix, but partial
+
+A cookie set by the *server* is not script-writable, so ITP's seven-day cap does
+not apply to it. Holding the same id in both places, with each recognised scan
+rewriting the other, made either one surviving sufficient. This genuinely fixed
+the weekly purge, and it is verified on production in both engines.
+
+It did not fix the rest. Cookies are per-container too, so the iOS
+installed-app split survived. Clearing website data still required an admin.
+And it was still a bearer token — `httpOnly` stops *script* reading it, not a
+determined student.
+
+### 3. Passkeys — where it landed
+
+A passkey lives in the OS credential store — iCloud Keychain, Google Password
+Manager — not in the browser's storage box. That single fact resolves every
+item above:
+
+| Failure | Under passkeys |
+|---|---|
+| Safari's 7-day purge | Not web storage; unaffected |
+| iOS installed-app container | Both containers reach the same keychain |
+| Two Vercel hostnames | No per-origin storage carries identity |
+| Cleared site data, private mode | Unaffected |
+| New phone, same ecosystem | Syncs automatically |
+| Admin device resets | Gone — there is nothing to reset |
+
+And it is the first version that is not a bearer token: the private key is
+non-extractable and using it needs the device plus its biometric. Handing a
+friend your phone no longer marks you present.
+
+**Two things must both hold to be marked present, and neither substitutes for
+the other:**
+
+- **who** — a passkey signature over a server-issued, single-use challenge
+- **where** — a live rotating token, which only exists on the projector
+
+The session cookie set after a successful assertion (`att_student`) is *only*
+so `/me` can be read without a biometric prompt. It cannot mark anyone present.
+
+### What we care about, and what the OS handles
+
+Handled for us: key generation, biometric prompts, sync, backup, and migration
+to a new phone. We store a credential id and a public key, and never see a
+private key.
+
+Ours to get right:
+
+1. **Multiple passkeys per student.** `student_credentials` is deliberately
+   one-to-many. If it were one-per-student, somebody moving from iPhone to
+   Android would be back to asking an admin — the exact problem passkeys were
+   adopted to remove.
+2. **Registration is authorised by presence.** Adding a passkey needs a live QR
+   token, so being in the room is the permission. No admin, no email.
+3. **The Relying Party ID is the domain.** Passkeys are bound to it. **Moving
+   domains invalidates every passkey**, so settle the final hostname before the
+   class registers.
+4. **Old phones.** Below iOS 16 / Android 9 there are no passkeys. Those
+   students are marked by hand on the grid — which is why no weaker second
+   login path exists to be attacked instead.
+5. **Verification is where the security lives.** Single-use challenges with
+   expiry, expected origin and RP ID taken from server config rather than the
+   request, signature checked against the stored public key, and a counter that
+   must advance. `@simplewebauthn/server` does the parsing; skipping any of
+   those checks would leave a fingerprint prompt that proves nothing.
+
+### Why not "Sign in with Microsoft"
+
+The roster is 47 students, all on `@iiitb.ac.in`, which is Microsoft 365 — so
+Entra ID would have mapped cleanly, and it would have fixed the recovery problem
+just as well. It was rejected on three grounds:
+
+- **It needs an app registration in the institute's tenant.** A student cannot
+  create one. That is a dependency on an IT department, on a timeline nobody
+  here controls, for an external app requesting sign-in across all students.
+- **MFA in a lecture hall.** If the tenant enforces it, 47 Authenticator
+  prompts land during class time.
+- **It adds an outage surface.** A tenant policy change or a Microsoft outage
+  would stop attendance. Nothing external can stop it today.
+
+Passkeys give the same recovery benefit with no third party involved.
+
+### Why not email OTP
+
+It was considered and rejected because **it is weaker than what it would
+replace**, not merely more work.
+
+A passkey binds to a device. An OTP is six digits that travel over WhatsApp in
+three seconds. Today a phone is one student permanently, so a student in class
+physically cannot mark five absent friends. With OTP, one person collects five
+codes and marks all five in under a minute. It hands out a mass-proxy tool.
+
+### What none of this fixes
+
+**Relaying the QR.** A student in the room photographs the projected code and
+sends it to an absent friend, who signs in as themselves, with their own
+biometric, and is marked present. Passkeys, Microsoft SSO and OTP are all
+equally powerless here, because they answer *who*, not *where*.
+
+The only control is how long a photographed code stays usable:
+
+| rotation | usable for |
+|---|---|
+| **10 s** | **10–20 s** |
+| 15 s | 15–30 s |
+| 30 s | 30–60 s |
+| 60 s | 60–120 s |
+| 120 s | 120–240 s |
+
+A realistic relay takes 15–30 seconds, so **use the 10-second rotation for real
+classes** — and project the QR large, because a fast rotation is unforgiving of
+a code nobody at the back can read. Beyond that, the count on the grid against
+the number of occupied seats is a better check than any cryptography.
+
 ## How the security works
 
 ### Rotating token
@@ -284,12 +456,25 @@ the projecting page needs it.
 
 IP checks would be pointless here — everyone is on the same campus wifi.
 
-### Device identity
+### Identity
 
-The client generates `crypto.randomUUID()` once and keeps it in `localStorage`
-under `att_device`. It is sent in the body of every request and **the server maps
-`device_id` → student**. A roll number from the client is never trusted after
-enrollment. One device per student, enforced by a unique constraint.
+A **passkey**. The private key is generated in the phone's secure element, kept
+in the OS credential store, and cannot be extracted — so unlike every earlier
+version of this, identity is not a bearer token that can be copied or forwarded.
+
+Marking present needs two independent things, and neither substitutes for the
+other:
+
+- **who** — a signature over a server-issued, single-use challenge, by a key
+  whose public half is already stored against a student
+- **where** — a live rotating QR token
+
+The `att_student` cookie set after a successful assertion only lets `/me` be
+read without another biometric prompt. It cannot mark anybody present.
+
+A roll number from the client is trusted exactly once, at registration, and only
+when accompanied by a live token. See **Why identity moved from localStorage, to
+a cookie, to passkeys** above for what came before and why each step failed.
 
 ### Cookies and HTTPS
 

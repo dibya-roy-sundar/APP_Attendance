@@ -38,6 +38,29 @@ export type LoginAttemptRow = {
   at: string
 }
 
+export type StudentCredentialRow = {
+  id: string
+  student_id: string
+  /** base64url of the raw credential id. */
+  credential_id: string
+  /** base64url COSE public key. */
+  public_key: string
+  counter: number
+  transports: string[] | null
+  device_label: string | null
+  created_at: string
+  last_used_at: string | null
+}
+
+export type WebAuthnChallengeRow = {
+  challenge: string
+  purpose: 'register' | 'authenticate'
+  /** Set for registration; null for discoverable authentication. */
+  student_id: string | null
+  created_at: string
+  expires_at: string
+}
+
 export type AdminGrantRow = {
   id: string
   label: string
@@ -61,6 +84,8 @@ export type AuditAction =
   | 'EXPORT'
   | 'CLAIM_DEVICE'
   | 'ADD_STUDENT'
+  | 'PASSKEY_REGISTERED'
+  | 'PASSKEY_REMOVED'
 
 export type AuditLogRow = {
   id: number
@@ -92,12 +117,33 @@ export type Database = {
           window_seconds?: number
         }
       >
-      attendance: Table<AttendanceRow, Omit<AttendanceRow, 'marked_at'> & { marked_at?: string }>
+      // device_id is optional on insert: passkey marks do not write it, since a
+      // credential is not a device. See src/lib/mark.ts.
+      attendance: Table<
+        AttendanceRow,
+        Omit<AttendanceRow, 'marked_at' | 'device_id'> & {
+          marked_at?: string
+          device_id?: string | null
+        }
+      >
       login_attempts: Table<
         LoginAttemptRow,
         Omit<LoginAttemptRow, 'id' | 'at'> & { id?: number; at?: string }
       >
       audit_log: Table<AuditLogRow, Omit<AuditLogRow, 'id' | 'at'> & { id?: number; at?: string }>
+      student_credentials: Table<
+        StudentCredentialRow,
+        Omit<StudentCredentialRow, 'id' | 'created_at' | 'last_used_at' | 'counter'> & {
+          id?: string
+          created_at?: string
+          last_used_at?: string | null
+          counter?: number
+        }
+      >
+      webauthn_challenges: Table<
+        WebAuthnChallengeRow,
+        Omit<WebAuthnChallengeRow, 'created_at'> & { created_at?: string }
+      >
       admin_grants: Table<
         AdminGrantRow,
         Omit<AdminGrantRow, 'id' | 'created_at' | 'revoked_at' | 'last_used_at'> & {

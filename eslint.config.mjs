@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Superseded implementations, kept verbatim for the record. They reference
+    // modules that no longer exist and are deliberately not maintained.
+    "docs/superseded/**",
   ]),
 ]);
 
