@@ -42,14 +42,6 @@ type Roster = {
 
 const POLL_MS = 5000;
 
-/** Carries the server's error code out of the fetch and into the catch. */
-class ToggleError extends Error {
-  constructor(readonly code: string) {
-    super(code);
-  }
-}
-const REASONS = ["phone dead", "late", "correction"] as const;
-
 function formatDate(d: string) {
   return new Intl.DateTimeFormat("en-GB", {
     timeZone: "UTC",
@@ -80,12 +72,11 @@ export function AdminClient() {
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  /** Student whose reason chips are showing, and which way the tap went. */
-  const [reasonFor, setReasonFor] = useState<{
-    studentId: string;
-    marked: boolean;
-  } | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
+  /** Students tapped but not yet written. Purely local until Save. */
+  const [staged, setStaged] = useState<Set<string>>(new Set());
+  const [query, setQuery] = useState("");
+  const [saving, setSaving] = useState(false);
   /** Rows with an in-flight toggle; their optimistic state must survive a poll. */
   const pending = useRef<Set<string>>(new Set());
 
@@ -148,87 +139,42 @@ export function AdminClient() {
   }, []);
 
   const session = roster?.session ?? null;
-  const markedCount = useMemo(
-    () => roster?.students.filter((s) => s.markedAt).length ?? 0,
+  const marked = useMemo(
+    () => roster?.students.filter((s) => s.markedAt) ?? [],
     [roster],
   );
-
-  async function toggle(student: Student, reason?: string) {
-    if (!session) return;
-    const wasMarked = Boolean(student.markedAt);
-    pending.current.add(student.studentId);
-
-    // Optimistic: the tap has to feel instant with 47 rows on a projector.
-    setRoster((prev) =>
-      prev
-        ? {
-            ...prev,
-            students: prev.students.map((s) =>
-              s.studentId === student.studentId
-                ? {
-                    ...s,
-                    markedAt: wasMarked ? null : new Date().toISOString(),
-                    source: wasMarked ? null : "manual",
-                  }
-                : s,
-            ),
-          }
-        : prev,
+  const unmarked = useMemo(
+    () => roster?.students.filter((s) => !s.markedAt) ?? [],
+    [roster],
+  );
+  const markedCount = marked.length;
+  /*
+   * Staged ids that are still actually unmarked. Derived rather than pruned in
+   * an effect: if a student scans while staged they simply drop out here, so a
+   * scan is never overwritten by a manual mark and nothing has to be kept in
+   * sync.
+   */
+  const pendingIds = useMemo(() => {
+    const open = new Set(unmarked.map((s) => s.studentId));
+    return [...staged].filter((id) => open.has(id));
+  }, [staged, unmarked]);
+  const filteredUnmarked = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return unmarked;
+    return unmarked.filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) || s.rollNo.toLowerCase().includes(q),
     );
-    if (!reason)
-      setReasonFor({ studentId: student.studentId, marked: !wasMarked });
+  }, [unmarked, query]);
 
-    try {
-      const res = await fetch("/api/toggle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          studentId: student.studentId,
-          sessionId: session.id,
-          reason,
-        }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new ToggleError(body.error ?? "UNKNOWN");
-      // Reconcile against what the server actually recorded.
-      setRoster((prev) =>
-        prev
-          ? {
-              ...prev,
-              students: prev.students.map((s) =>
-                s.studentId === student.studentId
-                  ? { ...s, markedAt: body.markedAt, source: body.source }
-                  : s,
-              ),
-            }
-          : prev,
-      );
-    } catch (e) {
-      const code = e instanceof ToggleError ? e.code : "OFFLINE";
-      if (code === "NO_SESSION") {
-        // Tapping is pointless until the grid is pointed at a real session.
-        // The next poll recovers the grid on its own.
-        setNotice("That session no longer exists. Showing the current one.");
-      } else if (code === "NO_STUDENT") {
-        setNotice("That student is no longer on the roster.");
-      } else if (code === "UNAUTHORIZED" || code === "FORBIDDEN") {
-        setNotice("You are no longer signed in. Reload the page.");
-      } else {
-        setNotice("That change did not save. Tap again.");
-      }
-      setRoster((prev) =>
-        prev
-          ? {
-              ...prev,
-              students: prev.students.map((s) =>
-                s.studentId === student.studentId ? student : s,
-              ),
-            }
-          : prev,
-      );
-    } finally {
-      pending.current.delete(student.studentId);
-    }
+  /** Tapping an unmarked row only changes local state — no request, no wait. */
+  function stage(studentId: string) {
+    setStaged((prev) => {
+      const next = new Set(prev);
+      if (next.has(studentId)) next.delete(studentId);
+      else next.add(studentId);
+      return next;
+    });
   }
 
   async function post(url: string, body: object) {
@@ -358,6 +304,62 @@ export function AdminClient() {
     if (ok) await load(selectedId);
   }
 
+  /**
+   * Writes every staged student in one request.
+   *
+   * The endpoint only inserts, so saving twice is harmless and a student who
+   * scanned in the meantime keeps their scan rather than being overwritten.
+   */
+  async function saveStaged(reason?: string) {
+    if (!session || pendingIds.length === 0) return;
+    setSaving(true);
+    try {
+      const { ok, data } = await post("/api/marks", {
+        sessionId: session.id,
+        studentIds: pendingIds,
+        reason,
+      });
+      if (!ok) {
+        const err = (data as { error?: string }).error;
+        setNotice(
+          err === "NO_SESSION"
+            ? "That session no longer exists. Nothing was saved."
+            : "Could not save. Your taps are still here — try again.",
+        );
+        return;
+      }
+      const { saved, alreadyMarked } = data as {
+        saved: number;
+        alreadyMarked: number;
+      };
+      setStaged(new Set());
+      setNotice(
+        alreadyMarked > 0
+          ? `Saved ${saved}. ${alreadyMarked} had already scanned.`
+          : `Saved ${saved} ${saved === 1 ? "mark" : "marks"}.`,
+      );
+      await load(selectedId);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /** Deliberate, one at a time — a stray tap must never absent someone. */
+  async function unmark(student: Student) {
+    setMenuFor(null);
+    if (!session) return;
+    const { ok } = await post("/api/marks/remove", {
+      sessionId: session.id,
+      studentId: student.studentId,
+    });
+    setNotice(
+      ok
+        ? `${student.name} is no longer marked present.`
+        : "Could not remove that mark.",
+    );
+    if (ok) await load(selectedId);
+  }
+
   async function resetDevice(student: Student) {
     setMenuFor(null);
     const { ok } = await post("/api/reset-device", {
@@ -468,7 +470,6 @@ export function AdminClient() {
         selectedId={selectedId ?? session?.id ?? null}
         onSelect={(id) => {
           setSelectedId(id);
-          setReasonFor(null);
         }}
         onStart={startSession}
         onShowQr={() => setShowQr(true)}
@@ -483,153 +484,272 @@ export function AdminClient() {
         </p>
       )}
 
-      <ul className="mt-3 divide-y divide-slate-200 border-y border-slate-200 dark:divide-slate-800 dark:border-slate-800">
-        {roster.students.map((s) => {
-          const marked = Boolean(s.markedAt);
-          const showChips = reasonFor?.studentId === s.studentId;
-          return (
-            <li key={s.studentId}>
-              <div className="flex items-stretch">
-                {/* The whole row is the control. No modal, no confirm — undo is another tap. */}
-                <button
-                  onClick={() => toggle(s)}
-                  disabled={!session}
-                  aria-pressed={marked}
-                  className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-3 text-left enabled:active:bg-slate-100 sm:gap-3 sm:px-4 dark:enabled:active:bg-slate-800"
-                >
-                  <span
-                    aria-hidden
-                    className={`w-4 shrink-0 text-center ${
-                      marked
-                        ? "text-emerald-700 dark:text-emerald-400"
-                        : "text-slate-500 dark:text-slate-400"
-                    }`}
-                  >
-                    {marked ? (s.source === "manual" ? "✎" : "✓") : "·"}
-                  </span>
-                  <span className="w-24 shrink-0 font-mono text-xs text-slate-500 dark:text-slate-400">
-                    {s.rollNo}
-                  </span>
-                  <span className="flex min-w-0 flex-1 items-center gap-2 truncate">
-                    <span className="truncate">{s.name}</span>
-                    {s.isSelf && (
-                      <span className="shrink-0 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-200">
-                        YOU
-                      </span>
-                    )}
-                  </span>
-                  <span className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">
-                    {marked
-                      ? s.source === "manual"
-                        ? "manual"
-                        : formatTime(s.markedAt as string)
-                      : "—"}
-                  </span>
-                </button>
-                <button
-                  onClick={() =>
-                    setMenuFor(menuFor === s.studentId ? null : s.studentId)
-                  }
-                  aria-label={`More actions for ${s.name}`}
-                  className="tap-square shrink-0 px-3 text-slate-500 dark:text-slate-400"
-                >
-                  ⋯
-                </button>
-              </div>
-
-              {showChips && (
-                <div className="flex flex-wrap items-center gap-2 px-4 pb-3 pl-11">
-                  <span className="text-xs text-slate-500 dark:text-slate-400">
-                    {reasonFor.marked ? "Marked" : "Unmarked"} — reason
-                    (optional)
-                  </span>
-                  {REASONS.map((r) => (
-                    <button
-                      key={r}
-                      onClick={() => {
-                        void toggleReason(s, r);
-                      }}
-                      className="min-h-11 rounded-full bg-slate-100 px-3.5 text-xs dark:bg-slate-800"
+      {/* Present already: scanned, or saved by hand. Not tappable, so a stray
+          thumb cannot absent somebody who did turn up. */}
+      <section className="mt-4">
+        <h2 className="px-4 pb-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          Marked · {marked.length}
+        </h2>
+        {marked.length === 0 ? (
+          <p className="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
+            Nobody yet. Scans appear here on their own.
+          </p>
+        ) : (
+          <ul className="divide-y divide-slate-200 border-y border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+            {marked.map((s) => (
+              <li key={s.studentId}>
+                <div className="flex items-stretch">
+                  <div className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-3 sm:gap-3 sm:px-4">
+                    <span
+                      aria-hidden
+                      className="w-4 shrink-0 text-center text-emerald-700 dark:text-emerald-400"
                     >
-                      {r}
-                    </button>
-                  ))}
-                  <button
-                    onClick={() => setReasonFor(null)}
-                    aria-label="Dismiss reason chips"
-                    className="tap-square px-1 text-xs text-slate-500 dark:text-slate-400"
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
-
-              {menuFor === s.studentId && (
-                <div className="flex flex-wrap items-center gap-3 bg-slate-50 px-4 py-3 pl-11 text-sm dark:bg-slate-900">
-                  <span className="inline-flex min-h-11 items-center px-1 text-slate-500 dark:text-slate-400">
-                    {s.enrolled ? "Phone registered" : "No phone registered"}
-                  </span>
-                  {roster.role === "primary" ? (
-                    <button
-                      onClick={() => void resetDevice(s)}
-                      disabled={busy || !s.enrolled}
-                      className="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-40 dark:border-slate-700"
-                    >
-                      Reset device
-                    </button>
-                  ) : (
-                    <span className="text-xs text-slate-500 dark:text-slate-400">
-                      Only the admin can reset a device.
+                      {s.source === "manual" ? "✎" : "✓"}
                     </span>
-                  )}
-                  {s.isSelf && roster.role === "primary" && (
-                    <button
-                      onClick={() => void claimThisDevice()}
-                      disabled={busy}
-                      className="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-40 dark:border-slate-700"
-                    >
-                      {s.enrolled
-                        ? "Re-link this phone"
-                        : "Register this phone"}
-                    </button>
-                  )}
+                    <span className="w-24 shrink-0 font-mono text-xs text-slate-500 dark:text-slate-400">
+                      {s.rollNo}
+                    </span>
+                    <span className="flex min-w-0 flex-1 items-center gap-2 truncate">
+                      <span className="truncate">{s.name}</span>
+                      {s.isSelf && <SelfBadge />}
+                    </span>
+                    <span className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">
+                      {s.source === "manual"
+                        ? "manual"
+                        : formatTime(s.markedAt as string)}
+                    </span>
+                  </div>
                   <button
-                    onClick={() => setMenuFor(null)}
-                    className="inline-flex min-h-11 items-center px-1 text-slate-500 dark:text-slate-400"
+                    onClick={() =>
+                      setMenuFor(menuFor === s.studentId ? null : s.studentId)
+                    }
+                    aria-label={`More actions for ${s.name}`}
+                    className="tap-square shrink-0 px-3 text-slate-500 dark:text-slate-400"
                   >
-                    Close
+                    ⋯
                   </button>
                 </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+                {menuFor === s.studentId && (
+                  <RowMenu
+                    student={s}
+                    role={roster.role}
+                    busy={busy}
+                    onClose={() => setMenuFor(null)}
+                    onReset={() => void resetDevice(s)}
+                    onClaim={() => void claimThisDevice()}
+                    onUnmark={() => void unmark(s)}
+                  />
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Not marked yet: tapping stages locally and costs nothing. */}
+      <section className="mt-6">
+        <div className="flex items-baseline justify-between gap-3 px-4 pb-1">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            Not marked · {unmarked.length}
+          </h2>
+          {pendingIds.length > 0 && (
+            <span className="text-xs text-amber-700 dark:text-amber-400">
+              {pendingIds.length} waiting to save
+            </span>
+          )}
+        </div>
+
+        {unmarked.length > 3 && (
+          <div className="px-4 pb-2">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search name or roll number"
+              aria-label="Filter unmarked students"
+              autoCapitalize="none"
+              spellCheck={false}
+              className="w-full rounded-xl border border-slate-300 bg-transparent px-3 py-2 text-base dark:border-slate-700"
+            />
+          </div>
+        )}
+
+        {unmarked.length === 0 ? (
+          <p className="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
+            Everyone is marked.
+          </p>
+        ) : filteredUnmarked.length === 0 ? (
+          <p className="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
+            Nobody unmarked matches “{query}”.
+          </p>
+        ) : (
+          <ul className="divide-y divide-slate-200 border-y border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+            {filteredUnmarked.map((s) => {
+              const isStaged = staged.has(s.studentId);
+              return (
+                <li key={s.studentId}>
+                  <div className="flex items-stretch">
+                    <button
+                      onClick={() => stage(s.studentId)}
+                      disabled={!session}
+                      aria-pressed={isStaged}
+                      className={`flex min-w-0 flex-1 items-center gap-2.5 px-3 py-3 text-left enabled:active:bg-slate-100 sm:gap-3 sm:px-4 dark:enabled:active:bg-slate-800 ${
+                        isStaged ? "bg-amber-50 dark:bg-amber-950/40" : ""
+                      }`}
+                    >
+                      <span
+                        aria-hidden
+                        className={`w-4 shrink-0 text-center ${
+                          isStaged
+                            ? "text-amber-700 dark:text-amber-400"
+                            : "text-slate-500 dark:text-slate-400"
+                        }`}
+                      >
+                        {isStaged ? "✎" : "·"}
+                      </span>
+                      <span className="w-24 shrink-0 font-mono text-xs text-slate-500 dark:text-slate-400">
+                        {s.rollNo}
+                      </span>
+                      <span className="flex min-w-0 flex-1 items-center gap-2 truncate">
+                        <span className="truncate">{s.name}</span>
+                        {s.isSelf && <SelfBadge />}
+                      </span>
+                      <span className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">
+                        {isStaged ? "will save" : "—"}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() =>
+                        setMenuFor(menuFor === s.studentId ? null : s.studentId)
+                      }
+                      aria-label={`More actions for ${s.name}`}
+                      className="tap-square shrink-0 px-3 text-slate-500 dark:text-slate-400"
+                    >
+                      ⋯
+                    </button>
+                  </div>
+                  {menuFor === s.studentId && (
+                    <RowMenu
+                      student={s}
+                      role={roster.role}
+                      busy={busy}
+                      onClose={() => setMenuFor(null)}
+                      onReset={() => void resetDevice(s)}
+                      onClaim={() => void claimThisDevice()}
+                    />
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
 
       <p className="px-4 py-4 text-xs text-slate-500 dark:text-slate-400">
         ✓ scanned · ✎ marked by hand · · absent
       </p>
+
+      {/* Only ever on screen when there is something to write. */}
+      {pendingIds.length > 0 && (
+        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-[var(--background)]/95 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:border-slate-800">
+          <div className="mx-auto flex max-w-3xl items-center gap-3">
+            <button
+              onClick={() => setStaged(new Set())}
+              disabled={saving}
+              className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm disabled:opacity-40 dark:border-slate-700"
+            >
+              Discard
+            </button>
+            <button
+              onClick={() => void saveStaged()}
+              disabled={saving}
+              className="flex-1 rounded-xl bg-slate-900 px-4 py-2.5 font-medium text-white disabled:opacity-40 dark:bg-white dark:text-slate-900"
+            >
+              {saving
+                ? "Saving…"
+                : `Save ${pendingIds.length} ${pendingIds.length === 1 ? "mark" : "marks"}`}
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
+}
 
-  /**
-   * A reason chip annotates the tap that just happened. The attendance state is
-   * already correct, so this only fills in the audit entry — it must never move
-   * the row.
-   */
-  async function toggleReason(student: Student, reason: string) {
-    setReasonFor(null);
-    if (!session) return;
-    const res = await fetch("/api/annotate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        studentId: student.studentId,
-        sessionId: session.id,
-        reason,
-      }),
-    });
-    if (!res.ok)
-      setNotice("Saved the change, but could not record the reason.");
-  }
+/** Marks the admin's own row, so they can find themselves among 47. */
+function SelfBadge() {
+  return (
+    <span className="shrink-0 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-200">
+      YOU
+    </span>
+  );
+}
+
+/**
+ * The per-row overflow menu.
+ *
+ * Unmarking lives here rather than on the row itself: it is the one action that
+ * can wrongly absent a student who did turn up, so it should take a deliberate
+ * second tap. `onUnmark` is only passed for rows that are actually marked.
+ */
+function RowMenu({
+  student,
+  role,
+  busy,
+  onClose,
+  onReset,
+  onClaim,
+  onUnmark,
+}: {
+  student: Student;
+  role: "primary" | "deputy";
+  busy: boolean;
+  onClose: () => void;
+  onReset: () => void;
+  onClaim: () => void;
+  onUnmark?: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 bg-slate-50 px-4 py-3 pl-11 text-sm dark:bg-slate-900">
+      {onUnmark && (
+        <button
+          onClick={onUnmark}
+          disabled={busy}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-40 dark:border-slate-700"
+        >
+          Unmark
+        </button>
+      )}
+      <span className="inline-flex min-h-11 items-center px-1 text-slate-500 dark:text-slate-400">
+        {student.enrolled ? "Phone registered" : "No phone registered"}
+      </span>
+      {role === "primary" ? (
+        <button
+          onClick={onReset}
+          disabled={busy || !student.enrolled}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-40 dark:border-slate-700"
+        >
+          Reset device
+        </button>
+      ) : (
+        <span className="text-xs text-slate-500 dark:text-slate-400">
+          Only the admin can reset a device.
+        </span>
+      )}
+      {student.isSelf && role === "primary" && (
+        <button
+          onClick={onClaim}
+          disabled={busy}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-40 dark:border-slate-700"
+        >
+          {student.enrolled ? "Re-link this phone" : "Register this phone"}
+        </button>
+      )}
+      <button
+        onClick={onClose}
+        className="inline-flex min-h-11 items-center px-1 text-slate-500 dark:text-slate-400"
+      >
+        Close
+      </button>
+    </div>
+  );
 }

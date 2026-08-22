@@ -274,9 +274,9 @@ async function main() {
   const target = students.find((s) => s.roll_no === rollOf(0))
   const collide = await Promise.all([
     api('/api/mark', { method: 'POST', body: { s: session.id, t: tok(), deviceId: devLower } }),
-    api('/api/toggle', {
+    api('/api/marks', {
       method: 'POST',
-      body: { studentId: target.id, sessionId: session.id },
+      body: { sessionId: session.id, studentIds: [target.id] },
       cookie: admin,
     }),
   ])
@@ -292,15 +292,15 @@ async function main() {
   check('the student ends up with 0 or 1 rows, never a duplicate', rows <= 1, `${rows}`)
 
   console.log('\n- toggling things that do not exist -')
-  const noStudent = await api('/api/toggle', {
+  const noStudent = await api('/api/marks', {
     method: 'POST',
-    body: { studentId: uuid(), sessionId: session.id },
+    body: { sessionId: session.id, studentIds: [uuid()] },
     cookie: admin,
   })
   check('unknown student gives NO_STUDENT', noStudent.data?.error === 'NO_STUDENT')
-  const noSession = await api('/api/toggle', {
+  const noSession = await api('/api/marks', {
     method: 'POST',
-    body: { studentId: target.id, sessionId: uuid() },
+    body: { sessionId: uuid(), studentIds: [target.id] },
     cookie: admin,
   })
   check('unknown session gives NO_SESSION', noSession.data?.error === 'NO_SESSION')
@@ -311,16 +311,23 @@ async function main() {
   check('truncated JSON gives 4xx, not 500', brokenJson.status >= 400 && brokenJson.status < 500, `${brokenJson.status}`)
   const emptyBody = await api('/api/mark', { method: 'POST', raw: '' })
   check('an empty body gives 4xx', emptyBody.status >= 400 && emptyBody.status < 500, `${emptyBody.status}`)
-  const arrayBody = await api('/api/toggle', { method: 'POST', raw: '[1,2,3]', cookie: admin })
+  const arrayBody = await api('/api/marks', { method: 'POST', raw: '[1,2,3]', cookie: admin })
   check('a JSON array body gives 4xx', arrayBody.status >= 400 && arrayBody.status < 500, `${arrayBody.status}`)
 
   const injection = "'; drop table students; --"
-  const sqlish = await api('/api/toggle', {
+  // The batch endpoint only audits rows it actually inserts, so clear the mark
+  // first — otherwise this saves nothing and there is no entry to inspect.
+  await api('/api/marks/remove', {
     method: 'POST',
-    body: { studentId: target.id, sessionId: session.id, reason: injection },
+    body: { sessionId: session.id, studentId: target.id },
     cookie: admin,
   })
-  check('a SQL-looking reason is accepted', sqlish.status === 200)
+  const sqlish = await api('/api/marks', {
+    method: 'POST',
+    body: { sessionId: session.id, studentIds: [target.id], reason: injection },
+    cookie: admin,
+  })
+  check('a SQL-looking reason is accepted', sqlish.status === 200 && sqlish.data.saved === 1, JSON.stringify(sqlish.data))
   check('students table is intact', (await count('students')) === students.length)
   const storedReason = await one(
     'audit_log',
@@ -328,12 +335,17 @@ async function main() {
   )
   check('and stored verbatim as text', storedReason.reason === injection, storedReason.reason)
 
-  const longReason = await api('/api/toggle', {
+  await api('/api/marks/remove', {
     method: 'POST',
-    body: { studentId: target.id, sessionId: session.id, reason: 'x'.repeat(5000) },
+    body: { sessionId: session.id, studentId: target.id },
     cookie: admin,
   })
-  check('an oversized reason is accepted', longReason.status === 200)
+  const longReason = await api('/api/marks', {
+    method: 'POST',
+    body: { sessionId: session.id, studentIds: [target.id], reason: 'x'.repeat(5000) },
+    cookie: admin,
+  })
+  check('an oversized reason is accepted', longReason.status === 200 && longReason.data.saved === 1, JSON.stringify(longReason.data))
   const trimmed = await one(
     'audit_log',
     `select=reason&student_id=eq.${target.id}&order=id.desc&limit=1`

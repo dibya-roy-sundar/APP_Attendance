@@ -117,12 +117,12 @@ async function main() {
     ['/api/export', 'GET', undefined],
     ['/api/roster', 'GET', undefined],
     ['/api/token?s=00000000-0000-4000-8000-000000000000', 'GET', undefined],
-    ['/api/toggle', 'POST', { studentId: uuid(), sessionId: uuid() }],
+    ['/api/marks', 'POST', { sessionId: uuid(), studentIds: [uuid()] }],
+    ['/api/marks/remove', 'POST', { sessionId: uuid(), studentId: uuid() }],
     ['/api/sessions', 'POST', {}],
     ['/api/sessions/state', 'POST', { sessionId: uuid(), open: false }],
     ['/api/enrollment', 'POST', { open: true }],
     ['/api/reset-device', 'POST', { studentId: uuid() }],
-    ['/api/annotate', 'POST', { studentId: uuid(), sessionId: uuid(), reason: 'x' }],
     ['/api/grants', 'GET', undefined],
     ['/api/grants', 'POST', { label: 'x', hours: 2 }],
     ['/api/grants/revoke', 'POST', { grantId: uuid() }],
@@ -342,41 +342,50 @@ async function main() {
   const scanned = roster.data.students.find((s) => s.rollNo === rollA)
   check('a scanned mark is source=scan', scanned.source === 'scan')
 
-  const off = await api('/api/toggle', {
+  const off = await api('/api/marks/remove', {
     method: 'POST',
     body: { studentId: scanned.studentId, sessionId: session.id },
     cookie: admin,
   })
-  check('tapping a scanned student unmarks them', off.data.status === 'UNMARKED')
+  check('unmarking a scanned student works', off.data.status === 'UNMARKED')
+  const offAgain = await api('/api/marks/remove', {
+    method: 'POST',
+    body: { studentId: scanned.studentId, sessionId: session.id },
+    cookie: admin,
+  })
+  check('unmarking twice is idempotent, not an error', offAgain.data.status === 'ALREADY_ABSENT')
 
-  const on = await api('/api/toggle', {
+  const on = await api('/api/marks', {
     method: 'POST',
-    body: { studentId: scanned.studentId, sessionId: session.id },
+    body: { sessionId: session.id, studentIds: [scanned.studentId], reason: 'phone dead' },
     cookie: admin,
   })
-  check('tapping again marks them by hand', on.data.status === 'MARKED' && on.data.source === 'manual')
+  check('marking by hand saves', on.data.status === 'SAVED' && on.data.saved === 1)
+  const onAgain = await api('/api/marks', {
+    method: 'POST',
+    body: { sessionId: session.id, studentIds: [scanned.studentId] },
+    cookie: admin,
+  })
   check(
-    'two audit entries were written for the two taps',
+    'saving the same batch twice writes nothing new',
+    onAgain.data.saved === 0 && onAgain.data.alreadyMarked === 1,
+    JSON.stringify(onAgain.data)
+  )
+  check(
+    'two audit entries were written for the unmark and the mark',
     (await count(
       'audit_log',
       `student_id=eq.${scanned.studentId}&action=in.(OVERRIDE_MARK,OVERRIDE_UNMARK)`
     )) === 2
   )
-
-  const annotated = await api('/api/annotate', {
-    method: 'POST',
-    body: { studentId: scanned.studentId, sessionId: session.id, reason: 'phone dead' },
-    cookie: admin,
-  })
-  check('a reason chip annotates the last tap', annotated.status === 200)
   check(
-    'the reason landed on the audit entry',
+    'the reason given at save time is on the audit entry',
     (
       await one('audit_log', `select=reason&student_id=eq.${scanned.studentId}&order=id.desc&limit=1`)
     ).reason === 'phone dead'
   )
   check(
-    'annotating did not change attendance',
+    'the mark is recorded as manual',
     (
       await one(
         'attendance',
@@ -384,6 +393,53 @@ async function main() {
       )
     ).source === 'manual'
   )
+
+  console.log('\n— a batch cannot be raced into the wrong state —')
+  const raceStudent = roster.data.students[30]
+  await api('/api/marks/remove', {
+    method: 'POST',
+    body: { sessionId: session.id, studentId: raceStudent.studentId },
+    cookie: admin,
+  })
+  const doubled = await Promise.all(
+    [1, 2, 3].map(() =>
+      api('/api/marks', {
+        method: 'POST',
+        body: { sessionId: session.id, studentIds: [raceStudent.studentId] },
+        cookie: admin,
+      })
+    )
+  )
+  check('three simultaneous saves all succeed', doubled.every((r) => r.status === 200))
+  check(
+    'and leave exactly one row — the old toggle would have flip-flopped',
+    (await count(
+      'attendance',
+      `session_id=eq.${session.id}&student_id=eq.${raceStudent.studentId}`
+    )) === 1
+  )
+
+  const batch = await api('/api/marks', {
+    method: 'POST',
+    body: {
+      sessionId: session.id,
+      studentIds: roster.data.students.slice(15, 25).map((s) => s.studentId),
+      reason: 'late',
+    },
+    cookie: admin,
+  })
+  check('a batch of ten saves in one request', batch.data.saved === 10, JSON.stringify(batch.data))
+
+  for (const [label, body] of [
+    ['an empty batch', { sessionId: session.id, studentIds: [] }],
+    ['a non-array', { sessionId: session.id, studentIds: 'nope' }],
+    ['a junk id', { sessionId: session.id, studentIds: ['not-a-uuid'] }],
+    ['an unknown session', { sessionId: uuid(), studentIds: [raceStudent.studentId] }],
+    ['nobody on the roster', { sessionId: session.id, studentIds: [uuid()] }],
+  ]) {
+    const r = await api('/api/marks', { method: 'POST', body, cookie: admin })
+    check(`${label} is refused`, r.status >= 400 && r.status < 500, `${r.status}`)
+  }
 
   // ── reset device ──────────────────────────────────────────────────────────
   console.log('\n— reset device —')
@@ -550,15 +606,15 @@ async function main() {
       'it is the roll number ADMIN_ROLL_NO names',
       selfRows[0]?.rollNo === process.env.ADMIN_ROLL_NO
     )
-    const selfToggle = await api('/api/toggle', {
+    const selfToggle = await api('/api/marks', {
       method: 'POST',
-      body: { studentId: selfRows[0].studentId, sessionId: session.id },
+      body: { sessionId: session.id, studentIds: [selfRows[0].studentId] },
       cookie: admin,
     })
-    check('the instructor can mark their own attendance', selfToggle.status === 200)
-    await api('/api/toggle', {
+    check('the admin can mark their own attendance', selfToggle.status === 200)
+    await api('/api/marks/remove', {
       method: 'POST',
-      body: { studentId: selfRows[0].studentId, sessionId: session.id },
+      body: { sessionId: session.id, studentId: selfRows[0].studentId },
       cookie: admin,
     })
   } else {
@@ -575,12 +631,12 @@ async function main() {
   check('expired session → SESSION_CLOSED, not a stack trace', expired.status === 409 && expired.data.error === 'SESSION_CLOSED')
   const expiredToken = await api(`/api/token?s=${session.id}`, { cookie: admin })
   check('no token is issued for an expired session', expiredToken.status === 409)
-  const stillTaps = await api('/api/toggle', {
+  const stillTaps = await api('/api/marks', {
     method: 'POST',
-    body: { studentId: scanned.studentId, sessionId: session.id },
+    body: { sessionId: session.id, studentIds: [scanned.studentId] },
     cookie: admin,
   })
-  check('the admin can still tap an expired session', stillTaps.status === 200)
+  check('the admin can still mark on an expired session', stillTaps.status === 200)
 
   const missing = await api('/api/mark', {
     method: 'POST',
@@ -603,12 +659,12 @@ async function main() {
   check('the backdated grid loads with every student', backRoster.data.students.length === studentCount)
   check('the backdated grid starts empty', backRoster.data.markedCount === 0)
 
-  const backTap = await api('/api/toggle', {
+  const backTap = await api('/api/marks', {
     method: 'POST',
-    body: { studentId: backRoster.data.students[5].studentId, sessionId: backSession.id },
+    body: { sessionId: backSession.id, studentIds: [backRoster.data.students[5].studentId] },
     cookie: admin,
   })
-  check('taps work on a backdated session', backTap.data.status === 'MARKED' && backTap.data.source === 'manual')
+  check('marks save on a backdated session', backTap.data.saved === 1)
 
   const dupe = await api('/api/sessions', { method: 'POST', body: { classDate: past }, cookie: admin })
   check(
@@ -834,18 +890,16 @@ async function main() {
     `got ${dToken.status} ${JSON.stringify(dToken.data)}`
   )
   check('the token carries the session rotation', dToken.data?.windowSeconds === 15)
-  const dToggle = await api('/api/toggle', {
+  const dToggle = await api('/api/marks', {
     method: 'POST',
-    body: { studentId: dRoster.data.students[8].studentId, sessionId: session.id },
+    body: {
+      sessionId: session.id,
+      studentIds: [dRoster.data.students[8].studentId],
+      reason: 'late',
+    },
     cookie: deputy,
   })
-  check('deputy can mark attendance', dToggle.status === 200 && dToggle.data.source === 'manual')
-  const dAnnotate = await api('/api/annotate', {
-    method: 'POST',
-    body: { studentId: dRoster.data.students[8].studentId, sessionId: session.id, reason: 'late' },
-    cookie: deputy,
-  })
-  check('deputy can attach a reason', dAnnotate.status === 200)
+  check('deputy can mark attendance', dToggle.status === 200 && dToggle.data.saved === 1)
   const dExtend = await api('/api/sessions/state', {
     method: 'POST',
     body: { sessionId: session.id, open: true, minutes: 5 },
