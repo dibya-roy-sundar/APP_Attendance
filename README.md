@@ -113,6 +113,12 @@ something is absenting a student who did turn up, and a stray thumb should not b
 able to do it. Unmarking lives in that row's `⋯` menu, where it takes a
 deliberate second tap.
 
+Removing a mark asks first, but only when the student made it themselves: a `✓`
+scan opens a dialog naming who they are and the minute they scanned, because that
+mark is their own evidence of having been there. A `✎` mark the admin made by
+hand goes straight through — it is theirs to undo. Either way an
+`OVERRIDE_UNMARK` entry lands in the audit log.
+
 **Not marked** holds everyone else, with a search box for when typing three
 letters beats scrolling 47 rows. Tapping a row **stages** it — no request, no
 waiting. A bar appears at the bottom showing how many are staged, with **Save**
@@ -216,6 +222,15 @@ The client generates `crypto.randomUUID()` once and keeps it in `localStorage`
 under `att_device`. It is sent in the body of every request and **the server maps
 `device_id` → student**. A roll number from the client is never trusted after
 enrollment. One device per student, enforced by a unique constraint.
+
+### Cookies and HTTPS
+
+The admin cookie is marked `Secure` when the request actually arrived over
+HTTPS, rather than whenever `NODE_ENV` says production. `next start` runs in
+production mode, so keying off it marked the cookie `Secure` even on a plain
+HTTP LAN address — where Safari drops it silently, as does Chrome for anything
+but `localhost`. Sign-in then returned 200 and left you looking at the login
+page. Deployments are unaffected: they are HTTPS, so the flag is still set.
 
 ### Guarding the credentials
 

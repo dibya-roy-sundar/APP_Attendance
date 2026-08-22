@@ -1,5 +1,6 @@
 "use client";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Spinner } from "@/components/Spinner";
 import { deviceId } from "@/lib/device";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -77,6 +78,8 @@ export function AdminClient() {
   const [staged, setStaged] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [saving, setSaving] = useState(false);
+  /** A scanned student awaiting confirmation before their mark is removed. */
+  const [confirmUnmark, setConfirmUnmark] = useState<Student | null>(null);
   /** Rows with an in-flight toggle; their optimistic state must survive a poll. */
   const pending = useRef<Set<string>>(new Set());
 
@@ -344,9 +347,21 @@ export function AdminClient() {
     }
   }
 
-  /** Deliberate, one at a time — a stray tap must never absent someone. */
-  async function unmark(student: Student) {
+  /**
+   * Removing a mark is deliberate, one at a time.
+   *
+   * A student who scanned in produced their own evidence of being there, so
+   * erasing it asks first and names who and when. A mark the admin made by hand
+   * is theirs to undo, and goes straight through.
+   */
+  function requestUnmark(student: Student) {
     setMenuFor(null);
+    if (student.source === "scan") setConfirmUnmark(student);
+    else void unmark(student);
+  }
+
+  async function unmark(student: Student) {
+    setConfirmUnmark(null);
     if (!session) return;
     const { ok } = await post("/api/marks/remove", {
       sessionId: session.id,
@@ -385,6 +400,32 @@ export function AdminClient() {
 
   return (
     <main className="mx-auto max-w-3xl pb-24">
+      <ConfirmDialog
+        open={confirmUnmark !== null}
+        title="Remove this student's own scan?"
+        confirmLabel="Remove the mark"
+        cancelLabel="Keep it"
+        busy={busy}
+        onCancel={() => setConfirmUnmark(null)}
+        onConfirm={() => void unmark(confirmUnmark as Student)}
+      >
+        {confirmUnmark && (
+          <>
+            <p>
+              <strong className="font-medium text-slate-900 dark:text-slate-100">
+                {confirmUnmark.name}
+              </strong>{" "}
+              ({confirmUnmark.rollNo}) scanned themselves in at{" "}
+              {formatTime(confirmUnmark.markedAt as string)}.
+            </p>
+            <p className="mt-2">
+              Removing it marks them absent for this class. Only do this if you
+              know they were not here.
+            </p>
+          </>
+        )}
+      </ConfirmDialog>
+
       {showQr && session && live && (
         <QrPanel
           sessionId={session.id}
@@ -537,7 +578,7 @@ export function AdminClient() {
                     onClose={() => setMenuFor(null)}
                     onReset={() => void resetDevice(s)}
                     onClaim={() => void claimThisDevice()}
-                    onUnmark={() => void unmark(s)}
+                    onUnmark={() => requestUnmark(s)}
                   />
                 )}
               </li>

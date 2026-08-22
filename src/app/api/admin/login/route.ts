@@ -1,4 +1,5 @@
 import {
+  isSecureRequest,
   hashCode,
   looksLikeCode,
   mintAdminCookie,
@@ -19,6 +20,7 @@ export async function POST(req: Request) {
   const body = await readJson(req)
   const secret = body.password
   const caller = callerKey(req)
+  const secure = isSecureRequest(req)
 
   // One shared password guards every attendance record, so unlimited guessing is
   // not acceptable even though the generated default is strong.
@@ -29,7 +31,7 @@ export async function POST(req: Request) {
 
   if (passwordMatches(secret)) {
     await clearFailures(caller)
-    const cookie = mintAdminCookie()
+    const cookie = mintAdminCookie(secure)
     ;(await cookies()).set(cookie.name, cookie.value, cookie.options)
     return ok({ status: 'OK', role: 'primary' })
   }
@@ -53,7 +55,7 @@ export async function POST(req: Request) {
           .eq('id', data.id)
 
         await clearFailures(caller)
-        const cookie = mintDeputyCookie(data.id, expiresAt)
+        const cookie = mintDeputyCookie(data.id, expiresAt, secure)
         ;(await cookies()).set(cookie.name, cookie.value, cookie.options)
         return ok({
           status: 'OK',

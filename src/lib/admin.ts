@@ -68,13 +68,33 @@ function equal(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb)
 }
 
-function cookieOptions(maxAge: number) {
+/**
+ * `secure` follows the actual request scheme rather than NODE_ENV.
+ *
+ * `next start` runs with NODE_ENV=production, so keying off it marked the cookie
+ * Secure even when served over plain HTTP on a LAN address — and a Secure cookie
+ * on http:// is silently dropped by Safari, and by Chrome for anything other
+ * than localhost. Sign-in then "succeeded" and left you on the login page.
+ * Production is unaffected: it is HTTPS, so the flag is still set.
+ */
+function cookieOptions(maxAge: number, secure: boolean) {
   return {
     httpOnly: true,
     sameSite: 'lax' as const,
-    secure: process.env.NODE_ENV === 'production',
+    secure,
     path: '/',
     maxAge,
+  }
+}
+
+/** True when the request actually arrived over HTTPS. */
+export function isSecureRequest(req: Request): boolean {
+  const forwarded = req.headers.get('x-forwarded-proto')
+  if (forwarded) return forwarded.split(',')[0].trim() === 'https'
+  try {
+    return new URL(req.url).protocol === 'https:'
+  } catch {
+    return false
   }
 }
 
@@ -83,12 +103,12 @@ function cookieOptions(maxAge: number) {
  * store: the signature is the proof, and changing the password invalidates every
  * outstanding cookie of both kinds.
  */
-export function mintAdminCookie(now: number = Date.now()) {
+export function mintAdminCookie(secure: boolean, now: number = Date.now()) {
   const exp = Math.floor(now / 1000) + PRIMARY_TTL_SECONDS
   return {
     name: ADMIN_COOKIE,
     value: `p.${exp}.${sign(`admin:${exp}`)}`,
-    options: cookieOptions(PRIMARY_TTL_SECONDS),
+    options: cookieOptions(PRIMARY_TTL_SECONDS, secure),
   }
 }
 
@@ -97,13 +117,18 @@ export function mintAdminCookie(now: number = Date.now()) {
  * but the grant row is still read on every request — that is what makes
  * revoking take effect immediately rather than whenever the cookie lapses.
  */
-export function mintDeputyCookie(grantId: string, grantExpiresAtMs: number, now = Date.now()) {
+export function mintDeputyCookie(
+  grantId: string,
+  grantExpiresAtMs: number,
+  secure: boolean,
+  now = Date.now()
+) {
   const maxAge = Math.max(60, Math.floor((grantExpiresAtMs - now) / 1000))
   const exp = Math.floor(now / 1000) + maxAge
   return {
     name: ADMIN_COOKIE,
     value: `g.${grantId}.${exp}.${sign(`grant:${grantId}:${exp}`)}`,
-    options: cookieOptions(maxAge),
+    options: cookieOptions(maxAge, secure),
   }
 }
 
