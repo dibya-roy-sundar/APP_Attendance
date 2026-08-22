@@ -77,13 +77,15 @@ async function main() {
     process.exit(2)
   }
 
+  // Failed sign-ins now persist in a table, so a previous run's brute-force
+  // test would throttle this one out of its own login.
+  await remove('login_attempts', 'id=gt.0')
   await remove('admin_grants', 'id=not.is.null')
   await remove('attendance', 'session_id=not.is.null')
   await remove('audit_log', 'id=gt.0')
   await remove('sessions', 'id=not.is.null')
   await patch('students', 'id=not.is.null', {
     device_id: null,
-    reset_allowed: false,
     enrolled_at: null,
   })
 
@@ -496,11 +498,8 @@ async function main() {
   })
   check('reset device succeeds', reset.status === 200)
   check(
-    'device binding cleared and a fresh claim granted',
-    await (async () => {
-      const r = await one('students', `select=device_id,reset_allowed&id=eq.${scanned.studentId}`)
-      return r.device_id === null && r.reset_allowed === true
-    })()
+    'the device binding is cleared',
+    (await one('students', `select=device_id&id=eq.${scanned.studentId}`)).device_id === null
   )
   const reclaim = await api('/api/enroll', {
     method: 'POST',
@@ -515,11 +514,6 @@ async function main() {
     'a reset student can register a new phone',
     reclaim.data?.status === 'ENROLLED',
     JSON.stringify(reclaim.data)
-  )
-  check(
-    'reset_allowed is consumed by the re-enrollment',
-    (await one('students', `select=reset_allowed&id=eq.${scanned.studentId}`)).reset_allowed ===
-      false
   )
 
   // ── session controls the admin actually has ───────────────────────────────

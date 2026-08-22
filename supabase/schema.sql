@@ -10,7 +10,6 @@ create table if not exists students (
   name          text not null,
   email         text,
   device_id     text unique,                -- null until enrolled
-  reset_allowed boolean not null default false,
   enrolled_at   timestamptz
 );
 
@@ -41,14 +40,6 @@ create table if not exists attendance (
   primary key (session_id, student_id)       -- makes double-marking impossible
 );
 
-create table if not exists settings (
-  key   text primary key,
-  value text not null
-);
-
-insert into settings (key, value) values ('enrollment_open', 'false')
-  on conflict (key) do nothing;
-
 create table if not exists audit_log (
   id         bigserial primary key,
   at         timestamptz not null default now(),
@@ -60,6 +51,16 @@ create table if not exists audit_log (
   session_id uuid references sessions(id) on delete set null,
   reason     text
 );
+
+-- Failed admin sign-ins, one row per attempt. Counting rows avoids the
+-- read-modify-write race a single counter would have.
+create table if not exists login_attempts (
+  id     bigserial primary key,
+  caller text        not null,
+  at     timestamptz not null default now()
+);
+
+create index if not exists login_attempts_caller_at_idx on login_attempts (caller, at desc);
 
 -- Temporary admin access. A grant is a hashed one-time code with an expiry;
 -- revoking it takes effect on the deputy's next request.
@@ -87,6 +88,6 @@ create index if not exists audit_log_at_idx on audit_log (at desc);
 alter table students   enable row level security;
 alter table sessions   enable row level security;
 alter table attendance enable row level security;
-alter table settings   enable row level security;
 alter table audit_log  enable row level security;
 alter table admin_grants enable row level security;
+alter table login_attempts enable row level security;

@@ -63,7 +63,6 @@ export async function POST(req: Request) {
     .update({
       device_id: deviceId,
       enrolled_at: new Date().toISOString(),
-      reset_allowed: false,
     })
     .eq('id', student.id)
     .is('device_id', null)

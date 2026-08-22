@@ -55,13 +55,15 @@ const cookieOf = (res) =>
 async function main() {
   if (!ADMIN_PASSWORD) throw new Error('ADMIN_PASSWORD not set')
 
+  // Failed sign-ins now persist in a table, so a previous run's brute-force
+  // test would throttle this one out of its own login.
+  await remove('login_attempts', 'id=gt.0')
   await remove('admin_grants', 'id=not.is.null')
   await remove('attendance', 'session_id=not.is.null')
   await remove('audit_log', 'id=gt.0')
   await remove('sessions', 'id=not.is.null')
   await patch('students', 'id=not.is.null', {
     device_id: null,
-    reset_allowed: false,
     enrolled_at: null,
   })
 
@@ -411,7 +413,6 @@ async function main() {
 
   // -- throttling -----------------------------------------------------------
   console.log('\n- brute force on the admin password -')
-  await patch('settings', 'key=eq.login_throttle', { value: '{}' })
   let blockedAt = null
   for (let i = 1; i <= 14; i++) {
     const r = await api('/api/admin/login', { method: 'POST', body: { password: `wrong-${i}` } })
@@ -422,8 +423,7 @@ async function main() {
   const held = await api('/api/admin/login', { method: 'POST', body: { password: ADMIN_PASSWORD } })
   check('even the right password is held off while throttled', held.status === 429, `${held.status}`)
   check('the response says how long to wait', typeof held.data?.retryAfterSeconds === 'number')
-
-  await patch('settings', 'key=eq.login_throttle', { value: '{}' })
+  await remove('login_attempts', 'id=gt.0')
   const recovered = await api('/api/admin/login', {
     method: 'POST',
     body: { password: ADMIN_PASSWORD },
@@ -433,8 +433,11 @@ async function main() {
 
   await api('/api/admin/login', { method: 'POST', body: { password: 'wrong' } })
   await api('/api/admin/login', { method: 'POST', body: { password: ADMIN_PASSWORD } })
-  const cleared = JSON.parse((await one('settings', 'select=value&key=eq.login_throttle')).value)
-  check('a correct password clears that address history', Object.keys(cleared).length === 0, JSON.stringify(cleared))
+  check(
+    'a correct password clears that address history',
+    (await count('login_attempts')) === 0,
+    `${await count('login_attempts')} attempts still recorded`
+  )
 
   // -- student view edges ---------------------------------------------------
   console.log('\n- what a student sees -')

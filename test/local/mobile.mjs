@@ -301,10 +301,8 @@ async function main() {
   await remove('sessions', 'id=not.is.null')
   await patch('students', 'id=not.is.null', {
     device_id: null,
-    reset_allowed: false,
     enrolled_at: null,
   })
-  await patch('settings', 'key=eq.enrollment_open', { value: 'true' })
 
   const students = await select('students', 'select=id,roll_no&order=s_no.asc')
   const login = await fetch(`${BASE}/api/admin/login`, {

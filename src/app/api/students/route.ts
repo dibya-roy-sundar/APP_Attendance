@@ -51,7 +51,6 @@ export async function POST(req: Request) {
       name,
       email: emailRaw || null,
       device_id: null,
-      reset_allowed: false,
       enrolled_at: null,
     })
     .select('id, s_no, roll_no, name, email')

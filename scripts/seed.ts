@@ -53,7 +53,6 @@ async function main() {
       name,
       email: email || null,
       device_id: null,
-      reset_allowed: false,
       enrolled_at: null,
     })
   }
@@ -92,7 +91,7 @@ async function main() {
   }
 
   for (const s of known) {
-    // device_id / reset_allowed / enrolled_at are deliberately not touched, so
+    // device_id and enrolled_at are deliberately not touched, so
     // re-seeding after a name fix never un-enrolls a phone already bound.
     const { error } = await db
       .from('students')

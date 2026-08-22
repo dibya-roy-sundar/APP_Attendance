@@ -304,8 +304,15 @@ page. Deployments are unaffected: they are HTTPS, so the flag is still set.
 
 Failed sign-ins are throttled per caller address: ten failures in fifteen minutes
 returns `429` with a `retryAfterSeconds`, and a correct credential clears the
-history. State lives in the `settings` table rather than process memory, because
-the app runs serverless and an in-memory counter would reset on every cold start.
+history. Each failure is **one row** in `login_attempts`, counted on read — not a
+counter. A counter has to be read, modified and written back, so two failures
+arriving together could each overwrite the other's count, which is exactly the
+burst throttling exists to catch. Rows also prune with a `WHERE`, so nothing has
+to cap how many addresses are tracked.
+
+It lives in Postgres rather than process memory because the app runs serverless:
+memory is per-instance and short-lived, so an in-memory counter would barely
+inconvenience an attacker.
 
 Roll numbers are matched **exactly and case-insensitively, in application code**
 rather than with SQL `ilike`. In `LIKE`, `%` and `_` are wildcards, so

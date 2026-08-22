@@ -10,7 +10,6 @@ export type StudentRow = {
   name: string
   email: string | null
   device_id: string | null
-  reset_allowed: boolean
   enrolled_at: string | null
 }
 
@@ -33,7 +32,11 @@ export type AttendanceRow = {
   source: 'scan' | 'manual'
 }
 
-export type SettingRow = { key: string; value: string }
+export type LoginAttemptRow = {
+  id: number
+  caller: string
+  at: string
+}
 
 export type AdminGrantRow = {
   id: string
@@ -90,7 +93,10 @@ export type Database = {
         }
       >
       attendance: Table<AttendanceRow, Omit<AttendanceRow, 'marked_at'> & { marked_at?: string }>
-      settings: Table<SettingRow, SettingRow>
+      login_attempts: Table<
+        LoginAttemptRow,
+        Omit<LoginAttemptRow, 'id' | 'at'> & { id?: number; at?: string }
+      >
       audit_log: Table<AuditLogRow, Omit<AuditLogRow, 'id' | 'at'> & { id?: number; at?: string }>
       admin_grants: Table<
         AdminGrantRow,

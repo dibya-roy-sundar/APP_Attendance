@@ -1,90 +1,66 @@
 import { db } from './supabase'
 
-const KEY = 'login_throttle'
 const WINDOW_MS = 15 * 60_000
 const MAX_ATTEMPTS = 10
-/** Bounds the stored blob so a spray from many addresses cannot grow it forever. */
-const MAX_TRACKED = 200
-
-type Buckets = Record<string, number[]>
 
 /**
  * Failed-login throttling for the one shared admin credential.
  *
- * Kept in `settings` rather than in memory because the app runs serverless:
- * process memory is per-instance and short-lived, so an in-memory counter would
- * barely slow an attacker down. A lost update under concurrency only ever lets a
- * few extra attempts through, which is an acceptable trade for needing no
- * schema change.
+ * A row per failure rather than a counter, which makes the whole thing a matter
+ * of inserts and counts. The previous version kept a JSON blob in `settings` and
+ * updated it read-modify-write, so two failures arriving together could each
+ * overwrite the other's count — precisely the case throttling exists to catch.
+ *
+ * Kept in Postgres rather than memory because the app runs serverless: process
+ * memory is per-instance and short-lived, so an in-memory counter would barely
+ * inconvenience an attacker.
  */
-async function read(): Promise<Buckets> {
-  const { data, error } = await db()
-    .from('settings')
-    .select('value')
-    .eq('key', KEY)
-    .maybeSingle()
-  if (error) throw error
-  if (!data?.value) return {}
-  try {
-    const parsed = JSON.parse(data.value)
-    return parsed && typeof parsed === 'object' ? (parsed as Buckets) : {}
-  } catch {
-    return {}
-  }
-}
-
-async function write(buckets: Buckets): Promise<void> {
-  const { error } = await db()
-    .from('settings')
-    .upsert({ key: KEY, value: JSON.stringify(buckets) }, { onConflict: 'key' })
-  if (error) console.error('throttle write failed', error)
-}
-
-function prune(buckets: Buckets, now: number): Buckets {
-  const out: Buckets = {}
-  const entries = Object.entries(buckets)
-    .map(([ip, times]) => [ip, times.filter((t) => now - t < WINDOW_MS)] as const)
-    .filter(([, times]) => times.length > 0)
-    // Keep the most recently active addresses if we are at the cap.
-    .sort((a, b) => Math.max(...b[1]) - Math.max(...a[1]))
-    .slice(0, MAX_TRACKED)
-  for (const [ip, times] of entries) out[ip] = times
-  return out
-}
 
 /** The caller's address, as far as the platform will tell us. */
 export function callerKey(req: Request): string {
-  const fwd = req.headers.get('x-forwarded-for')
-  if (fwd) return fwd.split(',')[0].trim()
+  const forwarded = req.headers.get('x-forwarded-for')
+  if (forwarded) return forwarded.split(',')[0].trim()
   return req.headers.get('x-real-ip')?.trim() || 'unknown'
 }
 
 export type ThrottleState = { blocked: boolean; retryAfterSeconds: number }
 
 export async function checkThrottle(key: string): Promise<ThrottleState> {
-  const now = Date.now()
-  const buckets = prune(await read(), now)
-  const times = buckets[key] ?? []
-  if (times.length < MAX_ATTEMPTS) return { blocked: false, retryAfterSeconds: 0 }
-  const oldest = Math.min(...times)
+  const since = new Date(Date.now() - WINDOW_MS).toISOString()
+  const { data, error } = await db()
+    .from('login_attempts')
+    .select('at')
+    .eq('caller', key)
+    .gte('at', since)
+    .order('at', { ascending: true })
+  if (error) throw error
+
+  const attempts = data ?? []
+  if (attempts.length < MAX_ATTEMPTS) return { blocked: false, retryAfterSeconds: 0 }
+
+  // Blocked until the oldest attempt in the window ages out.
+  const oldest = new Date(attempts[0].at).getTime()
   return {
     blocked: true,
-    retryAfterSeconds: Math.max(1, Math.ceil((oldest + WINDOW_MS - now) / 1000)),
+    retryAfterSeconds: Math.max(1, Math.ceil((oldest + WINDOW_MS - Date.now()) / 1000)),
   }
 }
 
 export async function recordFailure(key: string): Promise<void> {
-  const now = Date.now()
-  const buckets = prune(await read(), now)
-  buckets[key] = [...(buckets[key] ?? []), now]
-  await write(buckets)
+  const { error } = await db().from('login_attempts').insert({ caller: key })
+  if (error) {
+    console.error('login_attempts insert failed', error)
+    return
+  }
+  // Opportunistic tidy-up, so the table cannot grow without bound.
+  await db()
+    .from('login_attempts')
+    .delete()
+    .lt('at', new Date(Date.now() - WINDOW_MS).toISOString())
 }
 
 /** A correct credential clears that address's history. */
 export async function clearFailures(key: string): Promise<void> {
-  const now = Date.now()
-  const buckets = prune(await read(), now)
-  if (!(key in buckets)) return
-  delete buckets[key]
-  await write(buckets)
+  const { error } = await db().from('login_attempts').delete().eq('caller', key)
+  if (error) console.error('login_attempts clear failed', error)
 }

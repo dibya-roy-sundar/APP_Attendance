@@ -57,10 +57,8 @@ async function main() {
   await remove('sessions', 'id=not.is.null')
   await patch('students', 'id=not.is.null', {
     device_id: null,
-    reset_allowed: false,
     enrolled_at: null,
   })
-  await patch('settings', 'key=eq.enrollment_open', { value: 'false' })
 
   const students = await select('students', 'select=id,roll_no,name&order=s_no.asc')
   console.log(`roster: ${students.length} students\n`)

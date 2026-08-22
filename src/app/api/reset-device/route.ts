@@ -35,7 +35,7 @@ export async function POST(req: Request) {
 
   const { data, error } = await db()
     .from('students')
-    .update({ device_id: null, reset_allowed: true, enrolled_at: null })
+    .update({ device_id: null, enrolled_at: null })
     .eq('id', studentId)
     .select('id, name, roll_no')
     .maybeSingle()
