@@ -633,8 +633,22 @@ async function main() {
     console.log('\nFailures:')
     for (const f of failures) console.log(`  - ${f}`)
   }
+
+  // A build that fails to serve a screen used to make this audit *shorter*, not
+  // red: fewer screens reached means fewer checks run, and "0 failed" over half
+  // the matrix reads exactly like a pass. Assert the floor so a broken build is
+  // a failure rather than a quiet omission.
+  const FLOOR = 430
+  let short = false
+  if (pass + fail < FLOOR) {
+    short = true
+    console.log(
+      `\nTOO FEW CHECKS: ran ${pass + fail}, expected at least ${FLOOR}. ` +
+        'Screens were probably unreachable — treat this as a failure, not a pass.'
+    )
+  }
   console.log('='.repeat(60))
-  process.exit(fail === 0 ? 0 : 1)
+  process.exit(fail === 0 && !short ? 0 : 1)
 }
 
 main().catch((e) => {

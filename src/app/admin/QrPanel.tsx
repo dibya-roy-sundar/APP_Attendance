@@ -18,6 +18,7 @@ export function QrPanel({
   onClose?: () => void
 }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null)
+  const [rotation, setRotation] = useState<number | null>(null)
   const [url, setUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -39,9 +40,10 @@ export function QrPanel({
           setError('Session is closed.')
           return
         }
-        const { token, refreshInMs } = await res.json()
+        const { token, refreshInMs, windowSeconds } = await res.json()
         const target = `${window.location.origin}/m?s=${sessionId}&t=${token}`
         setUrl(target)
+        setRotation(windowSeconds)
         setDataUrl(
           await QRCode.toDataURL(target, {
             errorCorrectionLevel: 'M',
@@ -103,7 +105,8 @@ export function QrPanel({
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-5 overflow-hidden bg-white p-4 dark:bg-black">
       <p className="max-w-full text-center text-base font-medium sm:text-lg">
-        Scan to mark attendance — code changes every 15 seconds
+        Scan to mark attendance
+        {rotation ? ` — code changes every ${rotation} seconds` : ''}
       </p>
       {image}
       {error ? (

@@ -12,7 +12,7 @@ import { db } from '@/lib/supabase'
  * somebody is in the room looking at the projector, whereas the admin cookie is
  * a strictly stronger claim — and `ADMIN_ROLL_NO` decides which student is
  * being claimed, not anything the client sends. It also works while the
- * registration window is closed, for the same reason.
+ * device is already bound, for the same reason.
  *
  * Primary only. A deputy must never bind a device to the admin's identity.
  */

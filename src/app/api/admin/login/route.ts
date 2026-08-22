@@ -14,7 +14,7 @@ import { cookies } from 'next/headers'
 /**
  * One form, two credentials: the instructor's password, or a deputy's temporary
  * code. Deputies never receive the password — that could not be revoked, and
- * would hand over device resets and the enrollment window with it.
+ * would hand over device resets with it.
  */
 export async function POST(req: Request) {
   const body = await readJson(req)

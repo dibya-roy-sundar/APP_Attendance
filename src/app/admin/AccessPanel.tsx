@@ -26,7 +26,7 @@ function until(iso: string) {
  *
  * They can run a class — start and stop sessions, project the QR, mark
  * attendance — and download a view-only copy of the register. They cannot reset
- * a device, change the registration window, or pass access on. Revoking takes
+ * a device, or pass access on. Revoking takes
  * effect on their next request.
  */
 type Pick = { studentId: string; rollNo: string; name: string }

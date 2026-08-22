@@ -94,13 +94,11 @@ async function main() {
   await beat(800)
   await say(t, 'The roster grid: all 47, read-only until a session starts', 'admin-empty')
 
-  // Registration window has to be open for the first class of the term.
+  // No registration window any more: a phone registers itself the first time it
+  // scans, and a student who loses that binding asks for a device reset.
   await t.getByRole('button', { name: 'More', exact: true }).click()
   await beat(500)
-  await say(t, 'More: registration window, temporary access, past dates', 'admin-more')
-  await t.getByRole('button', { name: 'Closed' }).click()
-  await t.waitForTimeout(1200)
-  await say(t, 'Registration window opened for the first class', 'admin-enrolment-open')
+  await say(t, 'More: device resets, temporary access, past dates', 'admin-more')
   await t.getByRole('button', { name: 'More', exact: true }).click()
   await beat(400)
 
@@ -214,7 +212,7 @@ async function main() {
   await say(d, 'Their copies come out view-only and stamped with their name', 'deputy-export')
   await d.getByRole('button', { name: 'More', exact: true }).click()
   await beat(700)
-  await say(d, 'No registration window and no temporary access for a deputy', 'deputy-more-limited')
+  await say(d, 'No device resets and no temporary access for a deputy', 'deputy-more-limited')
 
   // ── the student's own record ───────────────────────────────────────────────
   console.log('\nSTUDENT — their own record')

@@ -38,7 +38,7 @@ export async function GET() {
  * stored, so a lost code has to be reissued rather than looked up.
  *
  * A deputy can run a class — sessions, the QR, marking attendance — and export a
- * view-only copy. They cannot reset devices, open the enrollment window, or hand
+ * view-only copy. They cannot reset devices or hand
  * out further access.
  */
 export async function POST(req: Request) {

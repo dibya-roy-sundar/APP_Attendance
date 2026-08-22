@@ -27,7 +27,7 @@ export async function guardAdmin(): Promise<Guard> {
 
 /**
  * The instructor only. Guards the operations a stand-in must never perform:
- * device resets, the enrollment window, and handing out further access.
+ * device resets and handing out further access.
  */
 export async function guardPrimary(): Promise<Guard> {
   const principal = await currentPrincipal()
@@ -61,7 +61,7 @@ export function isDeviceId(v: unknown): v is string {
  * The fold matters: the UUID pattern is case-insensitive but Postgres equality
  * and the unique index on `students.device_id` are not. Without normalising,
  * `ABC…` would pass validation, fail to match the stored `abc…`, and — with the
- * enrollment window open — let one phone claim a second student. `randomUUID()`
+ * binding cleared — let one phone claim a second student. `randomUUID()`
  * only ever emits lowercase, so this is a guard against drift rather than a live
  * defect.
  */

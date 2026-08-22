@@ -1,6 +1,6 @@
 "use client";
 
-import { deviceId } from "@/lib/device";
+import { deviceId, storagePersists } from "@/lib/device";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -8,7 +8,6 @@ type Result =
   | { kind: "loading" }
   | { kind: "marked"; name: string; classDate: string }
   | { kind: "enroll"; classDate: string }
-  | { kind: "notRegistered" }
   | { kind: "expired" }
   | { kind: "offline" }
   | { kind: "error"; message: string };
@@ -48,6 +47,12 @@ export function ScanClient({
   const [enrollError, setEnrollError] = useState<string | null>(null);
   // A React 19 dev remount must not fire two marks for one scan.
   const started = useRef(false);
+  // Probed on the client only: touching localStorage during render would differ
+  // between the server pass and the browser and trip hydration.
+  const [persists, setPersists] = useState(true);
+  useEffect(() => {
+    setPersists(storagePersists());
+  }, []);
 
   const mark = useCallback(async () => {
     if (!sessionId || !token) {
@@ -70,8 +75,6 @@ export function ScanClient({
         });
       } else if (body.status === "NEEDS_ENROLL") {
         setResult({ kind: "enroll", classDate: body.classDate });
-      } else if (body.status === "NOT_REGISTERED") {
-        setResult({ kind: "notRegistered" });
       } else if (
         body.error === "BAD_TOKEN" ||
         body.error === "SESSION_CLOSED"
@@ -167,10 +170,30 @@ export function ScanClient({
       {result.kind === "enroll" && (
         <Card>
           <h1 className="text-xl font-semibold">One-time registration</h1>
-          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-            Enter your roll number. It gets linked to this phone, and you will
-            not need to type it again.
-          </p>
+          {persists ? (
+            <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+              Enter your roll number. It gets linked to this phone, and you will
+              not need to type it again.
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                Enter your roll number to be marked present today.
+              </p>
+              {/* Registering still works and still counts — but this browser
+                  will not keep the link, so do not promise that it will. */}
+              <p
+                role="alert"
+                className="mt-3 rounded-xl bg-amber-50 px-3 py-2.5 text-sm ring-1 ring-amber-500/30 dark:bg-amber-950/40"
+              >
+                This browser is blocking site data, so the link to your phone
+                will not be saved. You will be marked present today, but next
+                class you will have to ask the admin to reset your phone. To
+                avoid that, allow site data (or leave Private Browsing) and scan
+                again.
+              </p>
+            </>
+          )}
           <form onSubmit={submitEnroll} className="mt-5 flex flex-col gap-3">
             <input
               value={rollNo}
@@ -201,21 +224,11 @@ export function ScanClient({
         </Card>
       )}
 
-      {result.kind === "notRegistered" && (
-        <Card tone="warn">
-          <h1 className="text-xl font-semibold">Not registered</h1>
-          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-            Ask the admin to open the registration window, then scan again.
-          </p>
-          <HomeLink />
-        </Card>
-      )}
-
       {result.kind === "expired" && (
         <Card tone="warn">
           <h1 className="text-xl font-semibold">Code expired</h1>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-            The QR code changes every 15 seconds. Scan the one on screen now.
+            The QR code on screen has already changed. Scan the current one.
           </p>
           <HomeLink />
         </Card>

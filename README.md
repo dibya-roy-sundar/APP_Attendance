@@ -6,7 +6,7 @@ date. The instructor can download an `.xlsx` matching their existing sheet
 layout exactly.
 
 No email, no student passwords. Identity is a device-bound UUID claimed once
-during an admin-controlled enrollment window.
+the first time they scan; losing that binding needs an admin device reset.
 
 **Postgres is the single source of truth.** Excel is generated on demand from it,
 never the other way round. Nothing writes to a spreadsheet file at runtime.

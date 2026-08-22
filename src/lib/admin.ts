@@ -12,7 +12,7 @@ const PRIMARY_TTL_SECONDS = 60 * 60 * 12 // one teaching day
  * `primary` is the instructor, holding ADMIN_PASSWORD. `deputy` is someone
  * covering for them, holding a time-limited code. A deputy can run a class —
  * sessions, the QR, marking attendance — but never touches identity: device
- * resets, the enrollment window and issuing further access stay with the
+ * resets and issuing further access stay with the
  * primary, and their spreadsheet comes out view-only.
  */
 export type Principal =

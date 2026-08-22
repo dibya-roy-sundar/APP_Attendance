@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
+    "test:browser": "node test/local/browser.mjs",
     "test:watch": "vitest",
     "seed": "tsx scripts/seed.ts",
     "typecheck": "tsc --noEmit",
