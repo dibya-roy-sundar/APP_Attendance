@@ -41,6 +41,13 @@ type Roster = {
 };
 
 const POLL_MS = 5000;
+
+/** Carries the server's error code out of the fetch and into the catch. */
+class ToggleError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
 const REASONS = ["phone dead", "late", "correction"] as const;
 
 function formatDate(d: string) {
@@ -83,32 +90,56 @@ export function AdminClient() {
   const pending = useRef<Set<string>>(new Set());
 
   const load = useCallback(async (sessionId?: string | null) => {
-    const qs = sessionId ? `?s=${encodeURIComponent(sessionId)}` : "";
-    const res = await fetch(`/api/roster${qs}`, { cache: "no-store" });
-    if (res.status === 401) {
-      window.location.reload(); // cookie expired mid-class
+    /*
+     * Two attempts. If the selected session has vanished — deleted, or the term
+     * reset from elsewhere — retry against the current session within this same
+     * call. Previously the poll just returned on any non-OK status, so the grid
+     * kept showing a roster with nothing behind it and every tap came back
+     * "did not save". Retrying here rather than writing `selectedId` keeps the
+     * fix out of the polling effect's own dependencies.
+     */
+    let target = sessionId ?? null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const qs = target ? `?s=${encodeURIComponent(target)}` : "";
+      const res = await fetch(`/api/roster${qs}`, { cache: "no-store" });
+      if (res.status === 401) {
+        window.location.reload(); // cookie expired mid-class
+        return;
+      }
+      if (res.status === 404 && target) {
+        setNotice("That session no longer exists. Showing the current one.");
+        target = null;
+        continue;
+      }
+      if (!res.ok) return;
+      const data: Roster = await res.json();
+      setRoster((prev) => {
+        if (!prev || pending.current.size === 0) return data;
+        // Keep optimistic rows as they are until their request settles.
+        return {
+          ...data,
+          students: data.students.map((s) => {
+            if (!pending.current.has(s.studentId)) return s;
+            return prev.students.find((p) => p.studentId === s.studentId) ?? s;
+          }),
+        };
+      });
       return;
     }
-    if (!res.ok) return;
-    const data: Roster = await res.json();
-    setRoster((prev) => {
-      if (!prev || pending.current.size === 0) return data;
-      // Keep optimistic rows as they are until their request settles.
-      return {
-        ...data,
-        students: data.students.map((s) => {
-          if (!pending.current.has(s.studentId)) return s;
-          return prev.students.find((p) => p.studentId === s.studentId) ?? s;
-        }),
-      };
-    });
-    if (!sessionId && data.session) setSelectedId(data.session.id);
   }, []);
 
   useEffect(() => {
-    void load(selectedId);
+    let cancelled = false;
+    // Kicked off inside an async scope so no state write happens synchronously
+    // in the effect body; the interval callback runs outside it either way.
+    (async () => {
+      if (!cancelled) await load(selectedId);
+    })();
     const id = setInterval(() => void load(selectedId), POLL_MS);
-    return () => clearInterval(id);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [load, selectedId]);
 
   useEffect(() => {
@@ -157,8 +188,8 @@ export function AdminClient() {
           reason,
         }),
       });
-      if (!res.ok) throw new Error("toggle failed");
-      const body = await res.json();
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new ToggleError(body.error ?? "UNKNOWN");
       // Reconcile against what the server actually recorded.
       setRoster((prev) =>
         prev
@@ -172,8 +203,19 @@ export function AdminClient() {
             }
           : prev,
       );
-    } catch {
-      setNotice("That change did not save. Tap again.");
+    } catch (e) {
+      const code = e instanceof ToggleError ? e.code : "OFFLINE";
+      if (code === "NO_SESSION") {
+        // Tapping is pointless until the grid is pointed at a real session.
+        // The next poll recovers the grid on its own.
+        setNotice("That session no longer exists. Showing the current one.");
+      } else if (code === "NO_STUDENT") {
+        setNotice("That student is no longer on the roster.");
+      } else if (code === "UNAUTHORIZED" || code === "FORBIDDEN") {
+        setNotice("You are no longer signed in. Reload the page.");
+      } else {
+        setNotice("That change did not save. Tap again.");
+      }
       setRoster((prev) =>
         prev
           ? {
@@ -405,7 +447,10 @@ export function AdminClient() {
           className="mx-4 mt-3 flex items-start gap-3 rounded-xl bg-amber-50 px-4 py-3 text-sm ring-1 ring-amber-500/30 dark:bg-amber-950/40"
         >
           <span className="flex-1">{notice}</span>
-          <button onClick={() => setNotice(null)} className="inline-flex min-h-11 items-center px-1 text-slate-500 dark:text-slate-400">
+          <button
+            onClick={() => setNotice(null)}
+            className="inline-flex min-h-11 items-center px-1 text-slate-500 dark:text-slate-400"
+          >
             Dismiss
           </button>
         </div>
@@ -420,7 +465,7 @@ export function AdminClient() {
         session={session}
         live={live}
         busy={busy}
-        selectedId={selectedId}
+        selectedId={selectedId ?? session?.id ?? null}
         onSelect={(id) => {
           setSelectedId(id);
           setReasonFor(null);
@@ -543,7 +588,9 @@ export function AdminClient() {
                       disabled={busy}
                       className="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-40 dark:border-slate-700"
                     >
-                      {s.enrolled ? "Re-link this phone" : "Register this phone"}
+                      {s.enrolled
+                        ? "Re-link this phone"
+                        : "Register this phone"}
                     </button>
                   )}
                   <button
