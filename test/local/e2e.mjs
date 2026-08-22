@@ -219,6 +219,64 @@ async function main() {
     JSON.stringify(closedEnroll.data)
   )
 
+  console.log('\n— the window closes itself —')
+  for (const bad of [0, 241, 5.5, 'five', null]) {
+    const r = await api('/api/enrollment', {
+      method: 'POST',
+      body: { open: true, minutes: bad },
+      cookie: admin,
+    })
+    check(`minutes=${JSON.stringify(bad)} is refused`, r.data?.error === 'BAD_MINUTES', JSON.stringify(r.data))
+  }
+  const timed = await api('/api/enrollment', {
+    method: 'POST',
+    body: { open: true, minutes: 5 },
+    cookie: admin,
+  })
+  check('opening returns the deadline', Boolean(timed.data?.enrollmentClosesAt), JSON.stringify(timed.data))
+  check(
+    'the deadline is about five minutes out',
+    Math.abs(new Date(timed.data.enrollmentClosesAt).getTime() - Date.now() - 300_000) < 15_000
+  )
+  check(
+    'the roster carries it so the grid can count down',
+    Boolean((await api(`/api/roster?s=${session.id}`, { cookie: admin })).data.enrollmentClosesAt)
+  )
+
+  // Wind the deadline back rather than waiting five minutes.
+  await patch('settings', 'key=eq.enrollment_closes_at', {
+    value: new Date(Date.now() - 1000).toISOString(),
+  })
+  const lapsed = await api('/api/enroll', {
+    method: 'POST',
+    body: { s: session.id, t: tokenFor(secret, session.id, nowWindow()), rollNo: rollC, deviceId: uuid() },
+  })
+  check(
+    'a claim after the deadline is refused',
+    lapsed.data?.error === 'ENROLLMENT_CLOSED',
+    JSON.stringify(lapsed.data)
+  )
+  check(
+    'the stored flag really is off, not just computed off',
+    (await one('settings', 'select=value&key=eq.enrollment_open')).value === 'false'
+  )
+  check(
+    'the automatic close is recorded against the system',
+    (await count('audit_log', 'action=eq.CLOSE_ENROLLMENT&actor=eq.system')) === 1
+  )
+  const beforePolls = await count('audit_log', 'action=eq.CLOSE_ENROLLMENT&actor=eq.system')
+  await api('/api/enrollment', { method: 'POST', body: { open: true, minutes: 5 }, cookie: admin })
+  await patch('settings', 'key=eq.enrollment_closes_at', {
+    value: new Date(Date.now() - 1000).toISOString(),
+  })
+  await Promise.all(
+    Array.from({ length: 6 }, () => api(`/api/roster?s=${session.id}`, { cookie: admin }))
+  )
+  check(
+    'six concurrent polls log the close once, not six times',
+    (await count('audit_log', 'action=eq.CLOSE_ENROLLMENT&actor=eq.system')) === beforePolls + 1
+  )
+
   console.log('\n— enrollment window open —')
   await api('/api/enrollment', { method: 'POST', body: { open: true }, cookie: admin })
 

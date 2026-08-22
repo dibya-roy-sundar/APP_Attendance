@@ -34,6 +34,7 @@ type Roster = {
   markedCount: number;
   total: number;
   enrollmentOpen: boolean;
+  enrollmentClosesAt: string | null;
   sessions: { id: string; classDate: string; isOpen: boolean }[];
   today: string;
   role: "primary" | "deputy";
@@ -298,13 +299,23 @@ export function AdminClient() {
     await load(session.id);
   }
 
-  async function toggleEnrollment() {
+  async function toggleEnrollment(open: boolean, minutes?: number) {
     if (!roster) return;
-    const { ok } = await post("/api/enrollment", {
-      open: !roster.enrollmentOpen,
-    });
-    if (ok) await load(selectedId);
-    else setNotice("Could not change the registration window.");
+    const { ok, data } = await post("/api/enrollment", { open, minutes });
+    if (!ok) {
+      setNotice(
+        (data as { error?: string }).error === "BAD_MINUTES"
+          ? "Choose between 1 minute and 4 hours."
+          : "Could not change the registration window.",
+      );
+      return;
+    }
+    setNotice(
+      open
+        ? `Registration open for ${minutes} minutes. It closes itself.`
+        : "Registration closed.",
+    );
+    await load(selectedId);
   }
 
   /**
@@ -511,6 +522,25 @@ export function AdminClient() {
         </div>
       )}
 
+      {roster.enrollmentOpen && (
+        <div className="mx-4 mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-amber-50 px-4 py-3 text-sm ring-1 ring-amber-500/30 dark:bg-amber-950/40">
+          <span className="font-medium">Registration is open</span>
+          <span className="text-xs text-slate-600 dark:text-slate-300">
+            Anyone in the room who knows a roll number can claim it
+            {roster.enrollmentClosesAt
+              ? ` · closes in ${countdown(roster.enrollmentClosesAt, now)}`
+              : ""}
+          </span>
+          <button
+            onClick={() => void toggleEnrollment(false)}
+            disabled={busy}
+            className="ml-auto inline-flex min-h-11 items-center px-1 underline disabled:opacity-40"
+          >
+            Close now
+          </button>
+        </div>
+      )}
+
       {notice && (
         <div
           role="status"
@@ -531,6 +561,8 @@ export function AdminClient() {
         students={roster.students}
         sessions={roster.sessions}
         enrollmentOpen={roster.enrollmentOpen}
+        enrollmentClosesAt={roster.enrollmentClosesAt}
+        now={now}
         today={roster.today}
         session={session}
         live={live}

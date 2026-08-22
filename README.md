@@ -62,7 +62,8 @@ npm run dev
 ### First class of the term
 
 1. Open `/admin` and sign in.
-2. Open **More → Registration window** and switch it to **Open**.
+2. Open **More → Registration window**, choose how long (2 / 5 / 10 / 30 min)
+   and tap **Open**. It closes itself when the time is up.
 3. **Start session**, then **Show QR** and project it.
 4. Students scan, type their roll number once, and are marked present.
 5. Close the registration window afterwards. Nobody can claim a roll number
@@ -158,6 +159,28 @@ into the grid; tap through from memory or a paper list. Every mark lands as `✎
 
 A date that already has a session is refused, and the existing one is opened
 instead.
+
+### The registration window
+
+Registration is the one moment where knowing a roll number is enough to claim an
+identity, and roll numbers are public. So it opens for **a chosen number of
+minutes and shuts itself** — the failure that matters is leaving it open because
+nobody remembered to close it.
+
+While it is open the grid carries a banner naming the risk and counting down,
+with **Close now** beside it. The automatic close is recorded in the audit log
+against `system`, and a guarded update means several polls arriving at once log
+it once rather than six times.
+
+What this does **not** fix, and is worth knowing: within an open window, whoever
+types a roll number first wins it. Somebody in the room can claim an absent
+classmate before that classmate ever enrols, which marks them present. The real
+student then sees "already registered on another phone" — indistinguishable from
+honestly changing handset — and the fix is the same **Reset device**. Nobody
+complains in the case that matters, because the absent student benefited. Keeping
+the window down to a couple of supervised minutes is what limits it; closing it
+properly needs enrollment to require the admin's assent rather than a public
+roll number.
 
 ### A student joins late
 

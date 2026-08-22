@@ -22,11 +22,15 @@ type Session = {
   windowSeconds: number;
 };
 
+const ENROLL_MINUTES = [2, 5, 10, 30] as const;
+
 type Props = {
   /** The roster, so temporary access can only be granted to someone on it. */
   students: { studentId: string; rollNo: string; name: string }[];
   sessions: { id: string; classDate: string; isOpen: boolean }[];
   enrollmentOpen: boolean;
+  enrollmentClosesAt: string | null;
+  now: number;
   session: Session | null;
   live: boolean;
   busy: boolean;
@@ -45,9 +49,16 @@ type Props = {
     open: boolean,
     opts?: { minutes?: number; windowSeconds?: number },
   ) => void;
-  onToggleEnrollment: () => void;
+  onToggleEnrollment: (open: boolean, minutes?: number) => void;
   onRosterChanged: (message: string) => void;
 };
+
+function countdown(iso: string, now: number) {
+  const left = Math.max(0, new Date(iso).getTime() - now);
+  const m = Math.floor(left / 60000);
+  const sec = Math.floor((left % 60000) / 1000);
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
 
 function formatDate(d: string) {
   return new Intl.DateTimeFormat("en-GB", {
@@ -65,6 +76,8 @@ export function Controls({
   students,
   sessions,
   enrollmentOpen,
+  enrollmentClosesAt,
+  now,
   session,
   live,
   busy,
@@ -84,6 +97,7 @@ export function Controls({
   const [duration, setDuration] = useState(DEFAULT_DURATION);
   const [rotation, setRotation] = useState(DEFAULT_ROTATION);
   const [backdate, setBackdate] = useState("");
+  const [enrollMinutes, setEnrollMinutes] = useState<number>(5);
   const todaySession = sessions.find((s) => s.classDate === today);
   const toggle = (
     p: "start" | "live" | "more" | "export" | "access" | "students",
@@ -248,26 +262,57 @@ export function Controls({
       {panel === "more" && (
         <Panel>
           {isPrimary && (
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-sm">
-                Registration window
-                <span className="block text-xs text-slate-500 dark:text-slate-400">
-                  Students can claim a roll number only while this is open.
-                </span>
-              </span>
-              <button
-                onClick={onToggleEnrollment}
-                disabled={busy}
-                aria-pressed={enrollmentOpen}
-                aria-label={`${enrollmentOpen ? "Open" : "Closed"} — registration window`}
-                className={`shrink-0 rounded-full px-4 py-1.5 text-sm font-medium disabled:opacity-40 ${
-                  enrollmentOpen
-                    ? "bg-emerald-700 text-white"
-                    : "border border-slate-300 dark:border-slate-700"
-                }`}
-              >
-                {enrollmentOpen ? "Open" : "Closed"}
-              </button>
+            <div>
+              <p className="text-sm font-medium">Registration window</p>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                While this is open, anyone in the room who knows a roll number
+                can claim it. Open it for a few minutes, not the whole class.
+              </p>
+
+              {enrollmentOpen ? (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-sm text-emerald-700 dark:text-emerald-400">
+                    Open
+                    {enrollmentClosesAt
+                      ? ` · closes in ${countdown(enrollmentClosesAt, now)}`
+                      : ""}
+                  </span>
+                  <button
+                    onClick={() => onToggleEnrollment(false)}
+                    disabled={busy}
+                    className="min-h-11 rounded-lg border border-slate-300 px-3 text-sm disabled:opacity-40 dark:border-slate-700"
+                  >
+                    Close now
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-slate-500 dark:text-slate-400">
+                    Open for
+                  </span>
+                  {ENROLL_MINUTES.map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setEnrollMinutes(m)}
+                      aria-pressed={enrollMinutes === m}
+                      className={`min-h-11 min-w-11 rounded-lg px-3 text-sm tabular-nums ${
+                        enrollMinutes === m
+                          ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                          : "border border-slate-300 dark:border-slate-700"
+                      }`}
+                    >
+                      {m}m
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => onToggleEnrollment(true, enrollMinutes)}
+                    disabled={busy}
+                    className="min-h-11 rounded-lg bg-emerald-700 px-3 text-sm font-medium text-white disabled:opacity-40"
+                  >
+                    Open
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
