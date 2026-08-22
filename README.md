@@ -304,7 +304,17 @@ page. Deployments are unaffected: they are HTTPS, so the flag is still set.
 
 Failed sign-ins are throttled per caller address: ten failures in fifteen minutes
 returns `429` with a `retryAfterSeconds`, and a correct credential clears the
-history. Each failure is **one row** in `login_attempts`, counted on read — not a
+history.
+
+**The correct password is honoured before the throttle is consulted.** That
+matters here specifically: throttling keys on the caller's address, and behind
+campus NAT the whole class shares one. Checking the limit first meant any student
+could fail ten sign-ins and lock the admin out for fifteen minutes, mid-lesson.
+Since an attacker's guesses are by definition wrong, counting only failures loses
+nothing — brute force is still capped at ten tries a quarter hour — and the admin
+can always get in. A deputy code can still be throttled out by a shared address,
+which is a fair trade: codes are 59 bits of randomness, and the admin can clear
+`login_attempts` or issue a new one. Each failure is **one row** in `login_attempts`, counted on read — not a
 counter. A counter has to be read, modified and written back, so two failures
 arriving together could each overwrite the other's count, which is exactly the
 burst throttling exists to catch. Rows also prune with a `WHERE`, so nothing has

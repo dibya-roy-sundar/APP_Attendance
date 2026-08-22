@@ -22,18 +22,27 @@ export async function POST(req: Request) {
   const caller = callerKey(req)
   const secure = isSecureRequest(req)
 
-  // One shared password guards every attendance record, so unlimited guessing is
-  // not acceptable even though the generated default is strong.
-  const throttle = await checkThrottle(caller)
-  if (throttle.blocked) {
-    return fail('TOO_MANY_ATTEMPTS', 429, { retryAfterSeconds: throttle.retryAfterSeconds })
-  }
-
+  /*
+   * The correct password is honoured before the throttle is even consulted.
+   *
+   * Throttling keys on the caller's address, and behind campus NAT that address
+   * is shared by the whole class — so checking it first meant any student could
+   * fail ten sign-ins and lock the admin out for fifteen minutes, in the middle
+   * of the lesson. Since an attacker's guesses are by definition wrong, counting
+   * only failures loses nothing: brute force is still limited to ten tries a
+   * quarter of an hour, and the admin can always get in.
+   */
   if (passwordMatches(secret)) {
     await clearFailures(caller)
     const cookie = mintAdminCookie(secure)
     ;(await cookies()).set(cookie.name, cookie.value, cookie.options)
     return ok({ status: 'OK', role: 'primary' })
+  }
+
+  // Past this point the attempt has failed, or is a code that costs a lookup.
+  const throttle = await checkThrottle(caller)
+  if (throttle.blocked) {
+    return fail('TOO_MANY_ATTEMPTS', 429, { retryAfterSeconds: throttle.retryAfterSeconds })
   }
 
   // Fall through to a grant code. Looked up by hash, so the comparison is an

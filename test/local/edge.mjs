@@ -420,9 +420,25 @@ async function main() {
   }
   check('repeated wrong passwords get throttled', blockedAt !== null, 'never blocked')
   check('throttling kicks in within 12 attempts', blockedAt !== null && blockedAt <= 12, `at ${blockedAt}`)
-  const held = await api('/api/admin/login', { method: 'POST', body: { password: ADMIN_PASSWORD } })
-  check('even the right password is held off while throttled', held.status === 429, `${held.status}`)
-  check('the response says how long to wait', typeof held.data?.retryAfterSeconds === 'number')
+  const stillWrong = await api('/api/admin/login', { method: 'POST', body: { password: 'wrong-again' } })
+  check('a further wrong password is refused with 429', stillWrong.status === 429, `${stillWrong.status}`)
+  check('the response says how long to wait', typeof stillWrong.data?.retryAfterSeconds === 'number')
+  // Behind campus NAT the whole class shares one address, so a student failing
+  // ten sign-ins must not be able to lock the admin out mid-lesson.
+  const adminGetsIn = await api('/api/admin/login', {
+    method: 'POST',
+    body: { password: ADMIN_PASSWORD },
+  })
+  check(
+    'the admin still gets in while that address is throttled',
+    adminGetsIn.status === 200,
+    `${adminGetsIn.status}`
+  )
+  check(
+    'and signing in clears the history',
+    (await count('login_attempts')) === 0,
+    `${await count('login_attempts')} left`
+  )
   await remove('login_attempts', 'id=gt.0')
   const recovered = await api('/api/admin/login', {
     method: 'POST',
