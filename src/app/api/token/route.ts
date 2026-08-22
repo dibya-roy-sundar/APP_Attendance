@@ -1,6 +1,7 @@
 import { fail, ok, guardAdmin } from '@/lib/api'
 import { getSessionById } from '@/lib/data'
 import { currentToken, msUntilNextWindow } from '@/lib/token'
+import { scanUrl } from '@/lib/origin'
 import type { NextRequest } from 'next/server'
 
 /**
@@ -26,9 +27,13 @@ export async function GET(req: NextRequest) {
   }
 
   const now = Date.now()
+  const token = currentToken(session.secret, session.id, now, session.window_seconds)
   return ok(
     {
-      token: currentToken(session.secret, session.id, now, session.window_seconds),
+      token,
+      // Built here, not in the browser: the admin may be on a deployment URL
+      // while the class must always land on the canonical origin.
+      scanUrl: scanUrl(req, session.id, token),
       windowSeconds: session.window_seconds,
       refreshInMs: msUntilNextWindow(now, session.window_seconds),
       expiresAt: session.expires_at,

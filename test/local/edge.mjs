@@ -488,6 +488,60 @@ async function main() {
   )
   check('with zero class columns', future.headers.get('x-export-classes') === '0')
 
+  // ── the origin the QR sends the class to ──────────────────────────────────
+  //
+  // A Vercel production deployment answers on two hosts: its immutable
+  // deployment URL and the project alias. localStorage is per origin and the
+  // device binding lives there, so a QR built from the admin's own host sends
+  // students to whichever one the admin had open. Register on one, open the
+  // other, and you are "Not registered" while the database says your roll
+  // number is claimed — a device reset each time, looking like lost data.
+  console.log('\n- the QR points at one fixed origin -')
+  {
+    // Reuse the session this suite has been driving; earlier cases may have
+    // closed it, and /api/token only answers for a live one.
+    await patch('sessions', `id=eq.${session.id}`, {
+      is_open: true,
+      expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+    })
+    const tok = await api(`/api/token?s=${session.id}`, { cookie: admin })
+    check('/api/token returns a scanUrl for the QR', typeof tok.data.scanUrl === 'string')
+
+    const expected = process.env.APP_ORIGIN
+    if (expected) {
+      // Started with APP_ORIGIN set, as production is.
+      check(
+        'the scan URL uses the canonical origin, not the browsing host',
+        tok.data.scanUrl.startsWith(`${expected.replace(/\/+$/, '')}/m?`),
+        `got ${tok.data.scanUrl}`
+      )
+      check(
+        'and therefore never the host this harness is talking to',
+        !tok.data.scanUrl.startsWith(BASE),
+        `got ${tok.data.scanUrl}`
+      )
+    } else {
+      // No canonical origin configured, so falling back to the request origin
+      // is correct — that is what keeps `next dev` and this harness working.
+      // Same origin as the request, though not necessarily the same spelling:
+      // Next resolves req.url through the Host header, so 127.0.0.1 comes back
+      // as localhost. What matters is that it stayed local rather than reaching
+      // for a remote host.
+      const fell = new URL(tok.data.scanUrl)
+      check(
+        'with no APP_ORIGIN it falls back to the request origin',
+        fell.protocol === 'http:' &&
+          ['localhost', '127.0.0.1'].includes(fell.hostname) &&
+          fell.port === String(new URL(BASE).port),
+        `got ${tok.data.scanUrl}`
+      )
+    }
+    check(
+      'the scan URL carries this session and a live token',
+      tok.data.scanUrl.includes(`s=${session.id}`) && tok.data.scanUrl.includes(`t=${tok.data.token}`)
+    )
+  }
+
   console.log(`\n${'='.repeat(60)}`)
   console.log(`${pass} passed, ${fail} failed`)
   if (failures.length) {

@@ -40,8 +40,12 @@ export function QrPanel({
           setError('Session is closed.')
           return
         }
-        const { token, refreshInMs, windowSeconds } = await res.json()
-        const target = `${window.location.origin}/m?s=${sessionId}&t=${token}`
+        const { scanUrl, refreshInMs, windowSeconds } = await res.json()
+        // Server-built. Never window.location.origin: a production deployment
+        // answers on both its immutable URL and the project alias, and the
+        // device binding in localStorage belongs to whichever one the student
+        // landed on.
+        const target = scanUrl
         setUrl(target)
         setRotation(windowSeconds)
         setDataUrl(

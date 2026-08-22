@@ -100,8 +100,9 @@ export function MeClient() {
         <div className="w-full rounded-2xl bg-amber-50 p-6 text-center ring-1 ring-amber-500/30 dark:bg-amber-950/40">
           <h1 className="text-xl font-semibold">Not registered</h1>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-            This phone is not linked to a student yet. Ask the admin to open
-            registration, then scan the QR code in class.
+            This phone is not linked to a student yet. Scan the QR code
+            projected in class to register. If you have registered before on
+            this phone, ask the admin to reset your device first.
           </p>
           <WayOut />
         </div>
