@@ -222,7 +222,7 @@ export function AccessPanel({ students }: { students: Pick[] }) {
                   key={h}
                   onClick={() => setHours(h)}
                   aria-pressed={hours === h}
-                  className={`rounded-lg px-2.5 text-sm tabular-nums ${
+                  className={`min-w-11 rounded-lg px-2.5 text-sm tabular-nums ${
                     hours === h
                       ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
                       : 'border border-slate-300 dark:border-slate-700'

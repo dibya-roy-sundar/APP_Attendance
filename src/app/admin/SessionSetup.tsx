@@ -78,7 +78,7 @@ function Choice({
             type="button"
             onClick={() => onChange(o.value)}
             aria-pressed={value === o.value}
-            className={`rounded-lg px-3 py-1.5 text-sm tabular-nums disabled:opacity-40 ${
+            className={`min-w-11 rounded-lg px-3 py-1.5 text-sm tabular-nums disabled:opacity-40 ${
               value === o.value
                 ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
                 : 'border border-slate-300 dark:border-slate-700'
@@ -122,7 +122,7 @@ export function LiveSessionControls({
               type="button"
               onClick={() => onExtend(m)}
               disabled={busy}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm tabular-nums disabled:opacity-40 dark:border-slate-700"
+              className="min-w-11 rounded-lg border border-slate-300 px-3 py-1.5 text-sm tabular-nums disabled:opacity-40 dark:border-slate-700"
             >
               +{m} min
             </button>
@@ -146,7 +146,7 @@ export function LiveSessionControls({
               }}
               aria-pressed={pendingRotation === s}
               disabled={busy}
-              className={`rounded-lg px-3 py-1.5 text-sm tabular-nums disabled:opacity-40 ${
+              className={`min-w-11 rounded-lg px-3 py-1.5 text-sm tabular-nums disabled:opacity-40 ${
                 pendingRotation === s
                   ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
                   : 'border border-slate-300 dark:border-slate-700'

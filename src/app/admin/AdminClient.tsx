@@ -169,6 +169,33 @@ export function AdminClient() {
         s.name.toLowerCase().includes(q) || s.rollNo.toLowerCase().includes(q),
     );
   }, [unmarked, query]);
+  const allVisibleStaged = useMemo(
+    () =>
+      filteredUnmarked.length > 0 &&
+      filteredUnmarked.every((s) => staged.has(s.studentId)),
+    [filteredUnmarked, staged],
+  );
+
+  /**
+   * Stages or clears everyone currently visible in the unmarked list.
+   *
+   * Deliberately scoped to the filtered view rather than the whole roster: if
+   * the admin has typed a search, "select all" that quietly staged 40 hidden
+   * students would be a trap.
+   */
+  function toggleSelectAllVisible() {
+    const visible = filteredUnmarked.map((s) => s.studentId);
+    const allStaged =
+      visible.length > 0 && visible.every((id) => staged.has(id));
+    setStaged((prev) => {
+      const next = new Set(prev);
+      for (const id of visible) {
+        if (allStaged) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  }
 
   /** Tapping an unmarked row only changes local state — no request, no wait. */
   function stage(studentId: string) {
@@ -600,17 +627,32 @@ export function AdminClient() {
           )}
         </div>
 
-        {unmarked.length > 3 && (
-          <div className="px-4 pb-2">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search name or roll number"
-              aria-label="Filter unmarked students"
-              autoCapitalize="none"
-              spellCheck={false}
-              className="w-full rounded-xl border border-slate-300 bg-transparent px-3 py-2 text-base dark:border-slate-700"
-            />
+        {unmarked.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 px-4 pb-2">
+            {unmarked.length > 3 && (
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search name or roll number"
+                aria-label="Filter unmarked students"
+                autoCapitalize="none"
+                spellCheck={false}
+                className="min-w-40 flex-1 rounded-xl border border-slate-300 bg-transparent px-3 py-2 text-base dark:border-slate-700"
+              />
+            )}
+            {filteredUnmarked.length > 0 && (
+              <button
+                onClick={toggleSelectAllVisible}
+                disabled={!session}
+                className="min-h-11 shrink-0 rounded-xl border border-slate-300 px-3 text-sm disabled:opacity-40 dark:border-slate-700"
+              >
+                {allVisibleStaged
+                  ? "Clear selection"
+                  : query.trim()
+                    ? `Select all ${filteredUnmarked.length} shown`
+                    : `Select all ${filteredUnmarked.length}`}
+              </button>
+            )}
           </div>
         )}
 

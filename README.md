@@ -120,9 +120,16 @@ hand goes straight through — it is theirs to undo. Either way an
 `OVERRIDE_UNMARK` entry lands in the audit log.
 
 **Not marked** holds everyone else, with a search box for when typing three
-letters beats scrolling 47 rows. Tapping a row **stages** it — no request, no
-waiting. A bar appears at the bottom showing how many are staged, with **Save**
-and **Discard**; it is absent when nothing is staged.
+letters beats scrolling 47 rows, and **Select all** for the days when nearly
+everyone is present — stage the lot, then un-stage the few who are not.
+
+Select all is scoped to what is on screen. With a search applied it reads
+"Select all 6 shown" and takes only those six; a control that quietly staged 41
+hidden students would be a trap.
+
+Tapping a row **stages** it — no request, no waiting. A bar appears at the bottom
+showing how many are staged, with **Save** and **Discard**; it is absent when
+nothing is staged.
 
 Save writes the whole batch in one request. That is not only about speed:
 
@@ -302,7 +309,11 @@ npm run e2e:mobile -- --shots   # also writes screenshots per device
 
 Runs against real engines — **WebKit for iOS Safari, Chromium for Android
 Chrome** — at iPhone SE / 14 / 14 Pro Max, Pixel 7, Galaxy S9+ and a 280px
-fold-closed worst case. It measures rather than asserts: horizontal overflow,
+fold-closed worst case, over fourteen screens each: landing, sign-in, sign-in
+with the password revealed, the offline page, the scan result, the student
+calendar, the roster, the session setup and live panels, export, More,
+temporary access with and without search results, the confirmation dialog, the
+staged save bar, and the fullscreen QR. It measures rather than asserts: horizontal overflow,
 every tap target against the 44px minimum, input font sizes, QR legibility,
 WCAG AA text contrast, and manifest installability.
 

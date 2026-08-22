@@ -410,6 +410,28 @@ async function main() {
     await page.goto(`${origin}/`, { waitUntil: 'networkidle' })
     await auditPage(page, 'home', phone)
 
+    // The sign-in page, in a context with no admin cookie — it was never
+    // measured while the audit signed itself in first.
+    const anon = await browser.newContext({
+      ...phone.preset,
+      colorScheme: THEME === 'light' ? 'light' : 'dark',
+    })
+    await anon.addInitScript((t) => {
+      try {
+        window.localStorage.setItem('att_theme', t)
+      } catch {}
+    }, THEME)
+    const anonPage = await anon.newPage()
+    await anonPage.goto(`${origin}/admin`, { waitUntil: 'networkidle' })
+    await auditPage(anonPage, 'login', phone)
+    // Password revealed: the eye swaps the input type, so re-measure.
+    await anonPage.getByRole('button', { name: 'Show password' }).click()
+    await anonPage.waitForTimeout(200)
+    await auditPage(anonPage, 'login-revealed', phone)
+    await anonPage.goto(`${origin}/offline.html`, { waitUntil: 'networkidle' })
+    await auditPage(anonPage, 'offline', phone)
+    await anon.close()
+
     // Student scan result.
     await page.goto(`${origin}/m?s=${session.id}&t=${token()}`, { waitUntil: 'networkidle' })
     await page.waitForTimeout(400)
@@ -439,6 +461,57 @@ async function main() {
         await btn.click().catch(() => {})
         await page.waitForTimeout(150)
       }
+    }
+
+    // Temporary access, which holds the roster picker.
+    const more = page.getByRole('button', { name: 'More', exact: true }).first()
+    if (await more.isVisible().catch(() => false)) {
+      await more.click()
+      await page.waitForTimeout(250)
+      const manage = page.getByRole('button', { name: 'Manage' }).first()
+      if (await manage.isVisible().catch(() => false)) {
+        await manage.click()
+        await page.waitForTimeout(300)
+        await auditPage(page, 'access', phone)
+        // With search results open, which is the tallest state.
+        const search = page.getByPlaceholder(/Search the roster/)
+        if (await search.isVisible().catch(() => false)) {
+          await search.fill('a')
+          await page.waitForTimeout(300)
+          await auditPage(page, 'access-results', phone)
+          await search.fill('')
+        }
+        await page.getByRole('button', { name: 'More', exact: true }).first().click()
+        await page.waitForTimeout(200)
+      }
+    }
+
+    // The confirm dialog, which only appears for a scanned student.
+    const scannedMenu = page.locator('button[aria-label^="More actions"]').first()
+    if (await scannedMenu.isVisible().catch(() => false)) {
+      await scannedMenu.click()
+      await page.waitForTimeout(250)
+      const unmark = page.locator('button', { hasText: /^Unmark$/ }).first()
+      if (await unmark.isVisible().catch(() => false)) {
+        await unmark.click()
+        await page.waitForTimeout(400)
+        if (await page.locator('[role=dialog]').isVisible().catch(() => false)) {
+          await auditPage(page, 'confirm-dialog', phone)
+          await page.locator('button', { hasText: /^Keep it$/ }).click()
+          await page.waitForTimeout(250)
+        }
+      }
+    }
+
+    // Staged selection, which puts the save bar on screen.
+    const selectAll = page.locator('button', { hasText: /^Select all/ }).first()
+    if (await selectAll.isVisible().catch(() => false)) {
+      await selectAll.click()
+      await page.waitForTimeout(300)
+      await auditPage(page, 'staged-save-bar', phone)
+      const discard = page.locator('button', { hasText: /^Discard$/ }).first()
+      if (await discard.isVisible().catch(() => false)) await discard.click()
+      await page.waitForTimeout(200)
     }
 
     // The fullscreen QR must fit without cropping.
