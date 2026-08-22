@@ -436,7 +436,14 @@ export function AdminClient() {
                   <span className="w-24 shrink-0 font-mono text-xs text-slate-500 dark:text-slate-400">
                     {s.rollNo}
                   </span>
-                  <span className="flex-1 truncate">{s.name}</span>
+                  <span className="flex min-w-0 flex-1 items-center gap-2 truncate">
+                    <span className="truncate">{s.name}</span>
+                    {s.isSelf && (
+                      <span className="shrink-0 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-200">
+                        YOU
+                      </span>
+                    )}
+                  </span>
                   <span className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">
                     {marked
                       ? s.source === "manual"

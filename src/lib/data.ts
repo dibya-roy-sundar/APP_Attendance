@@ -142,7 +142,15 @@ export async function getStudentByDevice(deviceId: string): Promise<StudentRow |
  * `sessionId` may be null — before the term's first session there is nothing to
  * mark, but the admin still needs to see that the roster loaded.
  */
-export async function getRoster(sessionId: string | null): Promise<RosterEntry[]> {
+export async function getRoster(
+  sessionId: string | null,
+  /**
+   * Whether to flag the instructor's own row. Off for a deputy: ADMIN_ROLL_NO
+   * names who the instructor is, which says nothing about who is signed in, so
+   * a stand-in would otherwise see "you" on somebody else's row.
+   */
+  markSelf = false
+): Promise<RosterEntry[]> {
   const [students, marks] = await Promise.all([
     listStudents(),
     sessionId
@@ -162,7 +170,7 @@ export async function getRoster(sessionId: string | null): Promise<RosterEntry[]
       enrolled: s.device_id !== null,
       markedAt: mark?.marked_at ?? null,
       source: (mark?.source as 'scan' | 'manual' | undefined) ?? null,
-      isSelf: selfRoll !== null && s.roll_no.toLowerCase() === selfRoll,
+      isSelf: markSelf && selfRoll !== null && s.roll_no.toLowerCase() === selfRoll,
     }
   })
 }

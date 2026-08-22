@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
   if (sessionId && !session) return fail('NO_SESSION', 404)
 
   const [students, enrollmentOpen, sessions] = await Promise.all([
-    getRoster(session?.id ?? null),
+    getRoster(session?.id ?? null, guard.principal.kind === 'primary'),
     isEnrollmentOpen(),
     listSessions(),
   ])
