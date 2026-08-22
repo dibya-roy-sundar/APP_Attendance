@@ -3,7 +3,8 @@
 import { Spinner } from "@/components/Spinner";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { startAuthentication } from "@simplewebauthn/browser";
 import { Calendar, type Day } from "./Calendar";
 type Me = {
   name: string;
@@ -17,7 +18,8 @@ type Me = {
 type State =
   | { kind: "loading" }
   | { kind: "ready"; me: Me }
-  | { kind: "unknown" }
+  | { kind: "unknown"; note?: string }
+  | { kind: "signingIn" }
   | { kind: "offline" };
 
 function formatDate(d: string) {
@@ -86,6 +88,65 @@ export function MeClient() {
     };
   }, []);
 
+  /**
+   * Re-establish a session from the passkey alone.
+   *
+   * Needs no class in session, because reading your own record proves nothing
+   * about being in the room and does not need to. The endpoint it calls cannot
+   * write to attendance.
+   */
+  const signIn = useCallback(async () => {
+    setState({ kind: "signingIn" });
+    try {
+      const optionsRes = await fetch("/api/passkey/session/options", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!optionsRes.ok) {
+        setState({ kind: "unknown", note: "Could not start sign-in. Try again." });
+        return;
+      }
+      const { options } = await optionsRes.json();
+
+      let assertion;
+      try {
+        assertion = await startAuthentication({ optionsJSON: options });
+      } catch {
+        // Cancelled, or this phone holds no passkey for the site. WebAuthn will
+        // not say which, so the message has to cover both.
+        setState({
+          kind: "unknown",
+          note: "No passkey was used. If this phone has never been set up, scan the QR code in class once.",
+        });
+        return;
+      }
+
+      const done = await fetch("/api/passkey/session/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ response: assertion, challenge: options.challenge }),
+      });
+      if (!done.ok) {
+        setState({ kind: "unknown", note: "That passkey was not recognised." });
+        return;
+      }
+      // Signed in — re-fetch the record the normal way.
+      const res = await fetch("/api/me", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!res.ok) {
+        setState({ kind: "unknown", note: "Signed in, but the record did not load." });
+        return;
+      }
+      setState({ kind: "ready", me: await res.json() });
+    } catch {
+      setState({ kind: "offline" });
+    }
+  }, []);
+
   if (state.kind === "loading") {
     return (
       <main className="mx-auto flex min-h-dvh max-w-md items-center justify-center p-6">
@@ -94,15 +155,37 @@ export function MeClient() {
     );
   }
 
-  if (state.kind === "unknown") {
+  if (state.kind === "unknown" || state.kind === "signingIn") {
+    const busy = state.kind === "signingIn";
     return (
       <main className="mx-auto flex min-h-dvh max-w-md items-center p-6">
         <div className="w-full rounded-2xl bg-amber-50 p-6 text-center ring-1 ring-amber-500/30 dark:bg-amber-950/40">
-          <h1 className="text-xl font-semibold">Not registered</h1>
+          <h1 className="text-xl font-semibold">Sign in to see your record</h1>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-            This phone is not linked to a student yet. Scan the QR code
-            projected in class to register. If you have registered before on
-            this phone, ask the admin to reset your device first.
+            Confirm with Face ID or your fingerprint. This only shows your own
+            attendance — it cannot mark you present.
+          </p>
+          {/*
+            Deliberately not "scan the QR code in class". A student who cleared
+            their cookies has not lost anything: the passkey is on the phone, and
+            reading your own record needs no class in session.
+          */}
+          <button
+            type="button"
+            onClick={signIn}
+            disabled={busy}
+            className="mt-5 min-h-11 w-full rounded-xl bg-slate-900 px-4 py-3 font-medium text-white disabled:opacity-40 dark:bg-white dark:text-slate-900"
+          >
+            {busy ? "Confirming…" : "Sign in"}
+          </button>
+          {state.kind === "unknown" && state.note && (
+            <p role="alert" className="mt-3 text-sm text-red-700 dark:text-red-400">
+              {state.note}
+            </p>
+          )}
+          <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+            No passkey on this phone yet? Scan the QR code in class once and it
+            sets itself up.
           </p>
           <WayOut />
         </div>

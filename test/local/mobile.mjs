@@ -10,7 +10,7 @@
 import { chromium, devices, webkit } from 'playwright'
 import { mkdir } from 'node:fs/promises'
 import { createHmac } from 'node:crypto'
-import { one, patch, remove, resetToRoster, select } from './db.mjs'
+import { one, resetToRoster, select } from './db.mjs'
 import { phone } from './student.mjs'
 
 // localhost, not 127.0.0.1: WebAuthn will not accept an IP address as a

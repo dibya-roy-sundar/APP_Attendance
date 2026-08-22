@@ -6,7 +6,7 @@
  *   node test/local/load.mjs
  */
 import { createHmac } from 'node:crypto'
-import { count, one, patch, remove, resetToRoster, select } from './db.mjs'
+import { count, one, remove, resetToRoster, select } from './db.mjs'
 import { phone } from './student.mjs'
 
 // localhost, not 127.0.0.1: WebAuthn will not accept an IP address as a

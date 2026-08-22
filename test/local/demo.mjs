@@ -12,7 +12,7 @@
 import { chromium, devices } from 'playwright'
 import { mkdir, rm } from 'node:fs/promises'
 import { createHmac } from 'node:crypto'
-import { one, patch, remove, resetToRoster, select } from './db.mjs'
+import { one, resetToRoster, select } from './db.mjs'
 
 // localhost, not 127.0.0.1: WebAuthn will not accept an IP address as a
 // Relying Party ID, so a passkey cannot be created on 127.0.0.1 at all.

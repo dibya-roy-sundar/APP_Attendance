@@ -11,7 +11,7 @@
  */
 import { chromium, webkit, devices } from 'playwright'
 import { createHmac } from 'node:crypto'
-import { count, one, patch, remove, resetToRoster, select } from './db.mjs'
+import { count, one, resetToRoster, select } from './db.mjs'
 
 // localhost, not 127.0.0.1: WebAuthn will not accept an IP address as a
 // Relying Party ID, so a passkey cannot be created on 127.0.0.1 at all.
@@ -92,7 +92,6 @@ async function adminJourney(engineName, engine, phone) {
       'sessions',
       'select=id,secret,window_seconds&order=opened_at.desc&limit=1'
     )
-    const roster = await select('students', 'select=roll_no,name&order=s_no.asc')
     // A student's phone. Registration needs a real authenticator, so this one
     // only checks what the screen offers and the expiry path; the passkey flow
     // itself is exercised in passkeyJourney() below, where a virtual sensor is
@@ -240,6 +239,40 @@ async function passkeyJourney(sessionInfo) {
       'and their attendance was never touched',
       (await count('attendance', `session_id=eq.${id}&student_id=eq.${student.id}`)) === 1
     )
+
+    // ── reading your own record between classes ──────────────────────────
+    //
+    // The gap this closes: the only route to a session used to run through
+    // /api/passkey/auth/options, which needs a live token. So a student who
+    // cleared their cookies could not see their own attendance until the next
+    // lesson started — for a weekly class, up to seven days.
+    await page.evaluate(() => fetch('/api/admin/logout', { method: 'POST' }))
+    await context.clearCookies()
+    await page.goto(`${BASE}/me`, { waitUntil: 'networkidle' })
+    const locked = await page.locator('body').innerText()
+    check(
+      '/me offers a passkey sign-in, not "go to class"',
+      /Sign in to see your record/.test(locked) &&
+        !/Scan the QR code projected in class to register/.test(locked),
+      locked.replace(/\s+/g, ' ').slice(0, 100)
+    )
+    const marksBefore = await count('attendance', `student_id=eq.${student.id}`)
+    await page.getByRole('button', { name: 'Sign in' }).click()
+    await page.getByText(student.name, { exact: false }).first().waitFor({ timeout: 30000 })
+    check('signs in from the passkey alone', true)
+    check(
+      'and records nothing — reading is not marking',
+      (await count('attendance', `student_id=eq.${student.id}`)) === marksBefore
+    )
+
+    // The session it issues must be no more powerful than the one from marking.
+    const sessionCookie = (await context.cookies()).find((c) => c.name === 'att_student')
+    const attempt = await fetch(`${BASE}/api/passkey/auth/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie: `att_student=${sessionCookie.value}` },
+      body: JSON.stringify({ s: id, t: 'x', challenge: 'y', response: { id: 'z' } }),
+    })
+    check('a read-only session cannot mark anybody present', attempt.status >= 400, `${attempt.status}`)
 
     // The admin grid should show the count, since that is how a phone change is
     // told apart from a problem.
