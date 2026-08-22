@@ -699,6 +699,28 @@ runs Postgres and PostgREST locally, for testing without a Supabase project.
 
 ## Deploying
 
+### Function region
+
+`vercel.json` pins functions to `bom1` (Mumbai). This is not a preference —
+it is worth 9x.
+
+Requests were entering at `bom1` and executing in `iad1` (Washington), which
+is what Vercel does when no region is set. Marking present takes two requests
+and nine sequential Supabase round trips between them, and Supabase is in
+Mumbai, so that crossing was paid nine times per sign-in:
+
+| | before | after |
+|---|---|---|
+| passkey sign-in, API only | 2800 ms | **305 ms** |
+| first registration | 3283 ms | **490 ms** |
+| tap to "Present", in a browser | 3848 ms | **1024 ms** |
+
+Check `x-vercel-id` after any deploy: the second field is the compute region,
+and it should read `bom1::bom1`. If you move the Supabase project, move this
+too — they need to be in the same place, and nothing will warn you.
+
+
+
 Live at **https://app-attendance-lilac.vercel.app**.
 
 ```bash
