@@ -7,11 +7,32 @@ import {
 } from '@/lib/data'
 import { db } from '@/lib/supabase'
 import { verifyToken } from '@/lib/token'
+import { readDeviceCookie, setDeviceCookie } from '@/lib/device-cookie'
+import { isSecureRequest } from '@/lib/admin'
 
 /**
  * Claims a roll number for this device. Enrollment is in-class only: the same
  * live-token check as /api/mark applies, so nobody enrolls from their room.
  */
+/**
+ * Re-point a student's binding at the id their browser is now carrying.
+ *
+ * When the cookie is what identified them, localStorage has already minted a
+ * fresh uuid and stored it. Leaving the database on the old id would make the
+ * cookie the only thing keeping them recognised — lose it and they are stuck
+ * asking for a reset. Adopting the browser's new id puts all three copies back
+ * in agreement, so either store alone is enough again.
+ *
+ * Whoever holds the cookie is already treated as this student, so allowing them
+ * to re-point it grants nothing new.
+ */
+async function rebind(studentId: string, deviceId: string): Promise<void> {
+  const { error } = await db().from('students').update({ device_id: deviceId }).eq('id', studentId)
+  // A rebind is a convenience, not the point of the request: if it collides
+  // with another phone's id, the scan should still succeed on the old binding.
+  if (error && (error as { code?: string }).code !== '23505') throw error
+}
+
 export async function POST(req: Request) {
   const body = await readJson(req)
   const { s, t } = body as { s?: string; t?: string }
@@ -19,7 +40,8 @@ export async function POST(req: Request) {
   const rollNo = typeof body.rollNo === 'string' ? body.rollNo.trim() : ''
 
   if (typeof s !== 'string' || !s) return fail('MISSING_SESSION')
-  if (!deviceId) return fail('BAD_DEVICE')
+  const cookieId = readDeviceCookie(req)
+  if (!deviceId && !cookieId) return fail('BAD_DEVICE')
   if (!rollNo || rollNo.length > MAX_ROLL_LENGTH) return fail('UNKNOWN_ROLL')
 
   const session = await getSessionById(s)
@@ -32,14 +54,31 @@ export async function POST(req: Request) {
   }
 
   // If this device is already bound, enrolling is a no-op — just mark them.
-  const existing = await getStudentByDevice(deviceId)
+  // The cookie is consulted too: a phone whose localStorage Safari purged is
+  // still this student, and must not be sent down the claim path below to be
+  // told their own roll number belongs to someone else.
+  let existing = deviceId ? await getStudentByDevice(deviceId) : null
+  let boundId = deviceId
+  if (!existing && cookieId && cookieId !== deviceId) {
+    existing = await getStudentByDevice(cookieId)
+    boundId = cookieId
+  }
   if (existing) {
     if (existing.roll_no.toLowerCase() !== rollNo.toLowerCase()) {
       return fail('DEVICE_ALREADY_BOUND', 409, { name: existing.name })
     }
-    await markPresent(session.id, existing.id, deviceId)
-    return ok({ status: 'MARKED', name: existing.name, rollNo: existing.roll_no })
+    if (deviceId && boundId !== deviceId) {
+      await rebind(existing.id, deviceId)
+      boundId = deviceId
+    }
+    await markPresent(session.id, existing.id, boundId as string)
+    return setDeviceCookie(
+      ok({ status: 'MARKED', name: existing.name, rollNo: existing.roll_no }),
+      boundId as string,
+      isSecureRequest(req)
+    )
   }
+  if (!deviceId) return fail('BAD_DEVICE')
 
   const student = await getStudentByRollNo(rollNo)
   if (!student) return fail('UNKNOWN_ROLL', 404)
@@ -77,12 +116,16 @@ export async function POST(req: Request) {
   if (!claimed || claimed.length === 0) return fail('ALREADY_CLAIMED', 409)
 
   await markPresent(session.id, claimed[0].id, deviceId)
-  return ok({
-    status: 'ENROLLED',
-    name: claimed[0].name,
-    rollNo: claimed[0].roll_no,
-    classDate: session.class_date,
-  })
+  return setDeviceCookie(
+    ok({
+      status: 'ENROLLED',
+      name: claimed[0].name,
+      rollNo: claimed[0].roll_no,
+      classDate: session.class_date,
+    }),
+    deviceId,
+    isSecureRequest(req)
+  )
 }
 
 async function markPresent(sessionId: string, studentId: string, deviceId: string) {

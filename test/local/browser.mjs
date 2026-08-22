@@ -168,6 +168,100 @@ async function storageDenied(engineName, engine, sessionInfo) {
   }
 }
 
+/**
+ * Safari's Intelligent Tracking Prevention deletes script-writable storage —
+ * localStorage included — after roughly seven days of browser use without
+ * interaction on the site. A weekly class sits exactly on that boundary. When
+ * it fires, the phone forgets its id while the database still holds it, so the
+ * student used to be told their own roll number belonged to another phone and
+ * needed an admin reset. The httpOnly cookie is the durable second copy.
+ */
+async function storageSurvival(engineName, engine, sessionInfo) {
+  console.log(`\n── ${engineName}: surviving a storage purge between classes ──`)
+  const browser = await engine.launch()
+  try {
+    const { id, secret, window_seconds } = sessionInfo
+    const url = () => `${BASE}/m?s=${id}&t=${tokenFor(secret, id, window_seconds)}`
+    const roster = await select('students', 'select=roll_no,name&order=s_no.asc')
+    const ctx = await browser.newContext({ ...devices['iPhone 14'] })
+    const p = await ctx.newPage()
+
+    // Week one: an ordinary registration.
+    await p.goto(url(), { waitUntil: 'networkidle' })
+    await p.getByLabel('Roll number').fill(roster[0].roll_no)
+    await p.getByRole('button', { name: /Register and mark present/ }).click()
+    await p.waitForSelector('text=Present', { timeout: 30000 })
+    check('registers normally', true)
+    const cookies = await ctx.cookies()
+    check(
+      'the binding is also kept in an httpOnly cookie',
+      cookies.some((c) => c.name === 'att_dev' && c.httpOnly)
+    )
+
+    // Week two, ITP has been through: localStorage gone, cookie intact.
+    await p.evaluate(() => localStorage.clear())
+    await p.goto(url(), { waitUntil: 'networkidle' })
+    await p.waitForTimeout(600)
+    let body = (await p.locator('body').innerText()).replace(/\s+/g, ' ')
+    check(
+      'localStorage purged: still recognised, no roll number retyped',
+      /Present/.test(body) && !/One-time registration/.test(body),
+      body.slice(0, 110)
+    )
+
+    // The other direction: cookie gone, localStorage intact.
+    await ctx.clearCookies()
+    await p.goto(url(), { waitUntil: 'networkidle' })
+    await p.waitForTimeout(600)
+    body = (await p.locator('body').innerText()).replace(/\s+/g, ' ')
+    // The purge above left localStorage holding a fresh id, which the server
+    // should have adopted. So dropping the cookie must not strand them.
+    check(
+      'the binding healed onto the id the browser now carries',
+      (await one('students', `select=device_id&roll_no=eq.${roster[0].roll_no}`)).device_id ===
+        (await p.evaluate(() => localStorage.getItem('att_device'))),
+      'database and localStorage disagree'
+    )
+    await ctx.clearCookies()
+    await p.goto(url(), { waitUntil: 'networkidle' })
+    await p.waitForTimeout(600)
+    body = (await p.locator('body').innerText()).replace(/\s+/g, ' ')
+    check(
+      'cookie cleared instead: localStorage alone still identifies them',
+      /Present/.test(body) && !/One-time registration/.test(body),
+      body.slice(0, 110)
+    )
+
+    // Both gone — a genuinely lost phone. Registration is offered, the claim is
+    // refused because the database still holds the old binding, and the message
+    // must say what to do rather than blame "another phone".
+    await ctx.clearCookies()
+    await p.evaluate(() => localStorage.clear())
+    await p.goto(url(), { waitUntil: 'networkidle' })
+    await p.waitForSelector('text=One-time registration', { timeout: 30000 })
+    await p.getByLabel('Roll number').fill(roster[0].roll_no)
+    await p.getByRole('button', { name: /Register and mark present/ }).click()
+    await p.waitForTimeout(1500)
+    body = (await p.locator('body').innerText()).replace(/\s+/g, ' ')
+    check('both stores lost: the claim is refused', /already linked to a phone/.test(body), body.slice(0, 140))
+    check(
+      'and it tells them to ask for a device reset rather than blaming another phone',
+      /ask the admin to reset your device/i.test(body) && !/on another phone/.test(body),
+      body.slice(0, 160)
+    )
+
+    // After the admin resets, the same phone can register again.
+    await patch('students', `roll_no=eq.${roster[0].roll_no}`, { device_id: null, enrolled_at: null })
+    await p.goto(url(), { waitUntil: 'networkidle' })
+    await p.getByLabel('Roll number').fill(roster[0].roll_no)
+    await p.getByRole('button', { name: /Register and mark present/ }).click()
+    await p.waitForSelector('text=Present', { timeout: 30000 })
+    check('after an admin device reset it registers again', true)
+  } finally {
+    await browser.close()
+  }
+}
+
 async function main() {
   if (!ADMIN_PASSWORD) throw new Error('ADMIN_PASSWORD not set')
   await cleanSlate()
@@ -200,6 +294,14 @@ async function main() {
     ['Chromium (Android)', chromium],
   ]) {
     await storageDenied(name, engine, live)
+  }
+
+  for (const [name, engine] of [
+    ['WebKit (iOS)', webkit],
+    ['Chromium (Android)', chromium],
+  ]) {
+    await storageSurvival(name, engine, live)
+    await patch('students', 'id=not.is.null', { device_id: null, enrolled_at: null })
   }
 
   await cleanSlate()

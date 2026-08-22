@@ -1,4 +1,5 @@
 import { fail, normaliseDeviceId, ok, readJson } from '@/lib/api'
+import { readDeviceCookie } from '@/lib/device-cookie'
 import { getStudentByDevice, listSessions } from '@/lib/data'
 import { db } from '@/lib/supabase'
 
@@ -8,9 +9,16 @@ import { db } from '@/lib/supabase'
  */
 export async function POST(req: Request) {
   const deviceId = normaliseDeviceId((await readJson(req)).deviceId)
-  if (!deviceId) return fail('NOT_REGISTERED', 404)
+  // The httpOnly cookie is the durable copy: Safari purges script-writable
+  // storage after about a week idle, so localStorage may be gone while the
+  // student is still perfectly well bound.
+  const cookieId = readDeviceCookie(req)
+  if (!deviceId && !cookieId) return fail('NOT_REGISTERED', 404)
 
-  const student = await getStudentByDevice(deviceId)
+  let student = deviceId ? await getStudentByDevice(deviceId) : null
+  if (!student && cookieId && cookieId !== deviceId) {
+    student = await getStudentByDevice(cookieId)
+  }
   if (!student) return fail('NOT_REGISTERED', 404)
 
   const [sessions, marks] = await Promise.all([

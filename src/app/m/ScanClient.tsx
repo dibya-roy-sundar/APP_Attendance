@@ -20,7 +20,8 @@ const MESSAGES: Record<string, string> = {
   BAD_DEVICE:
     "Your browser blocked local storage. Turn off private browsing and retry.",
   UNKNOWN_ROLL: "No student with that roll number. Check it and try again.",
-  ALREADY_CLAIMED: "That roll number is already registered on another phone.",
+  ALREADY_CLAIMED:
+    "That roll number is already linked to a phone. If that phone is this one and it has stopped recognising you, ask the admin to reset your device.",
   DEVICE_ALREADY_BOUND:
     "This phone is already registered to a different student.",
 };
