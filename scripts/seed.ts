@@ -19,7 +19,7 @@ const LAST_ROW = 48
 
 async function main() {
   const file = process.argv[2] ?? 'Soft Skills.xlsx'
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {
     throw new Error(

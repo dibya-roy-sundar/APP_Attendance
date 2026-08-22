@@ -10,8 +10,22 @@ function required(name: string): string {
 }
 
 export const env = {
+  /**
+   * Read at request time, never inlined.
+   *
+   * `NEXT_PUBLIC_*` variables are frozen into the bundle at build time — even in
+   * server code — so a project that only ever uses this on the server is better
+   * off with an unprefixed name: changing it then takes a redeploy rather than a
+   * rebuild. The prefixed name is still accepted, since the build spec named it.
+   */
   get supabaseUrl() {
-    return required('NEXT_PUBLIC_SUPABASE_URL')
+    const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
+    if (!url) {
+      throw new Error(
+        'Missing SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL). Copy .env.example to .env.local and fill it in.'
+      )
+    }
+    return url
   },
   get supabaseServiceKey() {
     return required('SUPABASE_SERVICE_ROLE_KEY')

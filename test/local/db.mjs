@@ -3,7 +3,7 @@
  * Supabase exposes no psql endpoint, so every setup/assertion query goes through
  * PostgREST with the service role key.
  */
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY
 
 if (!url || !key) {
