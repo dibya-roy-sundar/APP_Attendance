@@ -1,0 +1,27 @@
+# A stand-in for the Supabase REST surface, so the app can be exercised against
+# real Postgres — real unique constraints, real ON CONFLICT — without a cloud
+# project. Nothing here ships to production.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: attendance
+    ports: ['54322:5432']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d attendance']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  rest:
+    image: postgrest/postgrest:v12.2.3
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      PGRST_DB_URI: postgres://postgres:postgres@db:5432/attendance
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${PGRST_JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: 'false'
+    ports: ['54323:3000']

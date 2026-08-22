@@ -1,0 +1,367 @@
+# QR Attendance
+
+A class attendance system. The instructor projects a QR code that rotates every
+15 seconds; students scan it with their phone and are marked present for that
+date. The instructor can download an `.xlsx` matching their existing sheet
+layout exactly.
+
+No email, no student passwords. Identity is a device-bound UUID claimed once
+during an admin-controlled enrollment window.
+
+**Postgres is the single source of truth.** Excel is generated on demand from it,
+never the other way round. Nothing writes to a spreadsheet file at runtime.
+
+## Stack
+
+Next.js (App Router) on Vercel · Supabase Postgres · `exceljs` for the export ·
+no auth library — the admin is a single password in an env var.
+
+## Setup
+
+### 1. Create the database
+
+In the Supabase SQL editor, run [`supabase/schema.sql`](supabase/schema.sql).
+It is idempotent, so re-running it is safe.
+
+If your database predates the configurable QR rotation, run
+[`supabase/migrations/001_configurable_window.sql`](supabase/migrations/001_configurable_window.sql)
+as well — or just re-run `schema.sql`, which now carries the same `alter table`.
+
+### 2. Configure the app
+
+```bash
+cp .env.example .env.local
+```
+
+| Variable | Where it comes from |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase → Project Settings → API |
+| `SUPABASE_SERVICE_ROLE_KEY` | same page — **server-side only** |
+| `ADMIN_PASSWORD` | your choice; changing it signs out every admin session |
+| `CLASS_TIMEZONE` | optional, defaults to `Asia/Kolkata` |
+| `ADMIN_ROLL_NO` | optional — the instructor's own roll number, if they are one of the 47 |
+
+### 3. Seed the roster
+
+```bash
+npm run seed -- "Soft Skills.xlsx"
+```
+
+Reads `Roll NO.` (B), `Name` (C) and `Mail Id` (D) from rows 2–48 and preserves
+`S.No` (A) as the sort order. Idempotent: it upserts on `roll_no` and never
+clears a device binding, so you can re-run it after fixing a name in the sheet.
+
+### 4. Run
+
+```bash
+npm run dev
+```
+
+## Using it
+
+### First class of the term
+
+1. Open `/admin` and sign in.
+2. Open **More → Registration window** and switch it to **Open**.
+3. **Start session**, then **Show QR** and project it.
+4. Students scan, type their roll number once, and are marked present.
+5. Close the registration window afterwards. Nobody can claim a roll number
+   while it is closed.
+
+### Every class after that
+
+**Start session** — pick how long attendance stays open and how fast the QR
+rotates — then **Show QR**. Students scan; the grid fills in live.
+
+| Choice | Presets | Range |
+|---|---|---|
+| Open for | 15 / 30 / 45 / 60 / 90 / 120 min | 1 min – 10 hr |
+| QR rotates every | 10 / 15 / 30 / 60 / 120 s | 5 – 300 s |
+
+A shorter rotation is harder to forward; a longer one is easier to scan on a
+weak camera. The grace window is always one period, so choosing 60 s also means
+a screenshot stays usable for up to two minutes.
+
+While a session is running, **Extend / stop** offers:
+
+- **Extend** by 5, 10, 15 or 30 minutes. Time is added to the current end time,
+  so extending twice adds twice. A session that is still running stays
+  extendable even after midnight, when its `class_date` is legitimately
+  yesterday; a session that has *lapsed* can only be reopened on its own date,
+  so a backdated one never becomes scannable.
+- **QR rotation** can be retuned mid-class. The projected code refreshes within
+  one old period; tokens minted under the previous setting stop working.
+- **Stop session** ends the QR immediately. Taps on the grid keep working.
+
+### The instructor is one of the 47
+
+Set `ADMIN_ROLL_NO` to their roll number and the grid marks that row **YOU**, so
+they can find and tap it without hunting. They mark their own attendance the same
+way as anyone else's — by scanning with their phone, or by tapping their row.
+
+### The roster grid
+
+All 47 students, always visible, in sheet order.
+
+```
+✓  scanned      ✎  marked by hand      ·  absent
+```
+
+**Tapping a row toggles that student.** No modal, no confirm — undo is tapping
+again. After a tap, an optional chip row offers *phone dead* / *late* /
+*correction*; it annotates the audit entry the tap already wrote and never moves
+the row. Skipping it is fine, because the log records who and when regardless.
+
+The date picker loads any past session into the same grid with identical tap
+behaviour, so a correction found a week later needs no new interaction to learn.
+
+### Forgot to start a session
+
+**More → Session for a past date**. This creates a session with `is_open = false`
+and the chosen `class_date`, so no QR is ever generated for it. It opens straight
+into the grid; tap through from memory or a paper list. Every mark lands as `✎`.
+
+A date that already has a session is refused, and the existing one is opened
+instead.
+
+### Lost or wiped phone
+
+Tap **⋯** on the student's row → **Reset device**. That clears their binding and
+grants them one fresh claim even while the registration window is closed.
+
+### What a student sees
+
+`/me` shows a **month calendar** of their own attendance — green for present, red
+for absent, blank where no class was held — with the headline count and
+percentage above it and every class listed below. Month arrows move between the
+months that actually had classes.
+
+An empty square means no class was held, which is materially different from being
+absent; a flat list of dates cannot show that distinction at a glance.
+
+### Export
+
+**Download .xlsx** on the admin page, or `GET /api/export`. Generated from
+Postgres on every request.
+
+| Col | Header | Content |
+|---|---|---|
+| A | `S.No` | 1..47 |
+| B | `Roll NO.` | roll number |
+| C | `Name ` | name (trailing space matches the original) |
+| D | `Mail Id` | email |
+| E | `Date:` | label only |
+| F–U | one per session | `✓` where an attendance row exists |
+| V | `Total \nAttendnacs` | `=COUNTIF(F2:U2,"✓")` |
+| W | `Attendnacs \n%` | `=IF(COUNT($F$1:$U$1)=0,"",V2/COUNT($F$1:$U$1))`, `0.0%` |
+
+`V` and `W` are live formulas, not computed values. Scanned and manual marks both
+write a plain `✓` — provenance stays out of this file so it remains diffable
+against the instructor's own copy.
+
+## How the security works
+
+### Rotating token
+
+```
+period = session.window_seconds               // admin's choice, 5–300, default 15
+w      = floor(Date.now() / 1000 / period)
+token  = base64url(hmacSha256(secret, `${sessionId}:${w}`)).slice(0, 12)
+```
+
+The period is not part of the HMAC input — `w` is already derived from it, so a
+session rotating every 60 s produces an entirely different index sequence from one
+rotating every 15 s. Changing the period therefore invalidates every token
+already on screen, which is why the QR redraws within one old period.
+
+The server accepts `w` and `w-1`, so a student mid-scan when the QR flips still
+succeeds. It never accepts `w+1`.
+
+A screenshotted QR is worthless roughly 15 seconds later, which is what kills
+"WhatsApp the QR to the guy who skipped class." The secret never reaches the
+browser: the admin page polls `GET /api/token?s=` for the current token only.
+
+`/api/token` is **admin-gated**. The session id travels inside the QR URL, so an
+open token endpoint would let any student who scanned once poll it forever and
+relay live codes to someone who never turned up — defeating the rotation. Only
+the projecting page needs it.
+
+IP checks would be pointless here — everyone is on the same campus wifi.
+
+### Device identity
+
+The client generates `crypto.randomUUID()` once and keeps it in `localStorage`
+under `att_device`. It is sent in the body of every request and **the server maps
+`device_id` → student**. A roll number from the client is never trusted after
+enrollment. One device per student, enforced by a unique constraint.
+
+### Guarding the credentials
+
+Failed sign-ins are throttled per caller address: ten failures in fifteen minutes
+returns `429` with a `retryAfterSeconds`, and a correct credential clears the
+history. State lives in the `settings` table rather than process memory, because
+the app runs serverless and an in-memory counter would reset on every cold start.
+
+Roll numbers are matched **exactly and case-insensitively, in application code**
+rather than with SQL `ilike`. In `LIKE`, `%` and `_` are wildcards, so
+`MT202652_` would otherwise have matched a real student and let the caller enrol
+as them.
+
+Device ids are folded to lowercase before use. The UUID pattern is
+case-insensitive but Postgres equality is not, so without the fold one phone
+could hold two identities.
+
+### Permissions
+
+| | Identified by | Can do |
+|---|---|---|
+| **Admin** | `ADMIN_PASSWORD` → signed httpOnly cookie | everything |
+| **Student** | `att_device` UUID → server-side lookup | mark self present, view and export own row |
+
+Every write endpoint except `/api/mark` and `/api/enroll` checks the admin cookie
+server-side. Nothing is gated on a value the client sends. Every table has RLS
+enabled with no policies, so a leaked anon key grants nothing.
+
+### The audit log
+
+Not to police the admin — to protect them. When a student insists they attended
+on the 14th and the record disagrees, the log settles it in one conversation.
+
+## Testing
+
+```bash
+npm test        # unit: token windows and the export layout
+npm run lint
+npm run typecheck
+```
+
+The token helpers and the spreadsheet layout are covered by unit tests, including
+`w-1` acceptance, `w+1` rejection, and the `21 Aug 2026 → serial 46255` match
+against the instructor's original file.
+
+### Theme
+
+Light, Dark and Auto, offered on the home page, on `/me`, and under **More** on
+the admin page. **Dark is the default**; change `DEFAULT_MODE` in
+[`src/lib/theme.ts`](src/lib/theme.ts) to `'system'` to follow each device's own
+setting instead.
+
+Auto keeps following the device if its setting changes mid-session. The choice is
+read through `useSyncExternalStore`, so switching in one tab updates the others.
+
+The mechanism is worth knowing if you touch it: a small script inlined at the top
+of `<body>` resolves light/dark/system into an explicit `data-theme` attribute
+**before first paint**, so there is no white flash on a dark theme, and Tailwind's
+`dark:` variant has a concrete attribute to match rather than only a media query.
+`color-scheme` is set alongside it so native controls — date pickers, selects,
+scrollbars — follow the theme too.
+
+### Mobile and PWA
+
+```bash
+npm run e2e:mobile              # 171 checks across six phone sizes
+npm run e2e:mobile -- --shots   # also writes screenshots per device
+```
+
+Runs against real engines — **WebKit for iOS Safari, Chromium for Android
+Chrome** — at iPhone SE / 14 / 14 Pro Max, Pixel 7, Galaxy S9+ and a 280px
+fold-closed worst case. It measures rather than asserts: horizontal overflow,
+every tap target against the 44px minimum, input font sizes, QR legibility,
+WCAG AA text contrast, and manifest installability.
+
+Pass `--theme light` or `--theme dark` to audit either palette; both are expected
+to come back clean. Contrast is measured by resolving each colour through a
+canvas rather than parsing it, because Tailwind v4 emits `lab()` and a naive
+`rgb()` regex silently reports nonsense.
+
+Three things it exists to catch, because all three were real:
+
+- **Flex items refusing to shrink.** The roster row overflowed by 75px on an
+  iPhone SE and 225px at 280px, because a flex child's `min-width: auto` will
+  not go below its content. Fixed with `min-w-0` on the row.
+- **Controls under 44px.** Padding-only utilities left buttons at 34px and the
+  calendar arrows at 26px. `button`/`select` now carry a `min-height` at element
+  level so a utility class cannot undercut it, and WebKit needs an explicit
+  `height` on `select` because it ignores `min-height` on a native menulist.
+- **iOS focus zoom.** Safari zooms the page when a focused field's text is under
+  16px and never zooms back. Every field is now at least 16px, which is what
+  allowed `maximum-scale=1` to be removed — blocking pinch-zoom fails WCAG 1.4.4
+  and was only ever masking this.
+
+The app installs to the home screen on both platforms: manifest with 192/512 and
+maskable icons, an `apple-touch-icon`, `standalone` display, theme colour, and
+safe-area insets so the grid clears the notch and home indicator. A deliberately
+conservative service worker gives a real offline page instead of the browser's
+error screen — it never caches `/api/`, because a cached "you are present" would
+be a lie.
+
+Icons are generated, not committed by hand:
+
+```bash
+npm run icons
+```
+
+### Load and edge cases
+
+```bash
+npm run e2e:load     # a class of 47 all scanning at once
+npm run e2e:edge     # hostile input, races, boundaries
+```
+
+`e2e:load` runs six scenarios against a real database. Measured against Supabase
+from a laptop (~300 ms per round trip), 47 simultaneous scans all succeed in
+about one second, a triple-tap storm of 141 requests still yields exactly 47
+rows, and latency is flat across repeated waves. Per-request latency is almost
+entirely network distance: `/api/mark` makes three sequential database calls, so
+it costs roughly 3 x RTT. Deployed next to the database that is tens of
+milliseconds, not hundreds.
+
+`e2e:edge` covers what a classroom actually produces: wildcards and 500-character
+strings in the roll-number field, non-UUID device ids, three phones racing for
+one roll number, two admins starting the same date at once, a scan colliding with
+an admin tap, truncated JSON, SQL-looking text in the reason field, a class that
+runs past midnight, grants that expire or are deleted mid-use, and brute-forced
+passwords.
+
+### End-to-end, against a real database
+
+The build spec's test checklist is automated — 87 checks covering token rotation,
+enrollment races, concurrent scans, backdated sessions, `/me` isolation, the
+audit log, and the export.
+
+Point it at any running instance plus that instance's database:
+
+```bash
+set -a; . ./.env.local; set +a      # or your staging env
+npm run build
+npm run e2e:serve &                 # serves on :3100
+npm run e2e
+```
+
+Override `BASE_URL` to test a deployed instance instead of localhost.
+
+**It deletes data.** Every run clears `sessions`, `attendance` and `audit_log`
+and unbinds every device, so run it against a scratch project or before the term
+starts — never against a database holding real attendance. As a safeguard it
+refuses to start if `attendance` already has rows; pass `E2E_CONFIRM_WIPE=1` to
+override that deliberately.
+
+There is also a self-contained Docker stack (`npm run e2e:up` / `e2e:down`) that
+runs Postgres and PostgREST locally, for testing without a Supabase project.
+
+## Deploying
+
+Push to a Git repo, import it in Vercel, and set the four environment variables
+from `.env.example` in the project settings. No build configuration is needed.
+
+## Deliberately out of scope
+
+Multi-class support, faculty accounts, geofencing, face recognition, native apps,
+and any AI/LLM component — every rule here is deterministic, so a model would add
+latency and failure modes for no benefit.
+
+**Live sync to a OneDrive/Google Sheets file** was considered and rejected: it
+needs an app registration, an OAuth consent flow, encrypted refresh-token
+storage, and write-conflict handling, and it fails silently when a token goes
+stale. On-demand export gives the same artifact with none of that, and bolts on
+cleanly later because Postgres is already the source of truth.

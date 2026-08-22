@@ -1,0 +1,113 @@
+@import "tailwindcss";
+
+/*
+ * Theme is driven by `data-theme` on <html>, not by the media query alone, so
+ * the instructor can override what their phone reports. A script in the layout
+ * resolves light/dark/system into an explicit attribute before first paint, so
+ * this variant always has something to match and there is no flash.
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --background: #0b1120;
+  --foreground: #e2e8f0;
+  /* Tells the browser to render native controls — date pickers, selects,
+     scrollbars — dark as well, which CSS variables alone cannot do. */
+  color-scheme: dark;
+}
+
+/* Fallback for a viewer with JavaScript disabled, where no attribute is set. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --background: #0b1120;
+    --foreground: #e2e8f0;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* The admin taps 47 rows in a row; the flash just gets in the way. */
+  -webkit-tap-highlight-color: transparent;
+  /* Notch and home-indicator clearance. The viewport is `fit=cover`, so without
+     these the grid runs under the rounded corners in landscape. */
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/*
+ * Touch targets.
+ *
+ * Apple asks for 44pt, Android for 48dp; 44px satisfies both once the tap slop
+ * either platform adds is counted. Applied at element level so padding-only
+ * utilities cannot leave a control at 34px, which is what an audit across six
+ * phone sizes actually found.
+ */
+button,
+select,
+input[type="date"],
+input[type="checkbox"],
+input[type="radio"] {
+  min-height: 44px;
+}
+
+/*
+ * WebKit ignores min-height on a native `menulist` select, so the date picker
+ * measured 23px tall on iOS Safari while every other engine honoured it. Taking
+ * over the appearance is the only way to hold 44px on both, so the chevron is
+ * drawn here — in a slate that reads against a light or dark field.
+ */
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 44px;
+  padding-right: 2rem;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%2394a3b8' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.7rem center;
+  background-size: 0.7rem;
+}
+
+/* Icon-only controls need the width too, not just the height. */
+.tap-square {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/*
+ * iOS Safari zooms the whole page when a focused field's text is under 16px,
+ * and never zooms back out. Every field is therefore at least 16px, which is
+ * also why the viewport no longer needs to block pinch-zoom to avoid it.
+ */
+input,
+select,
+textarea {
+  font-size: max(16px, 1rem);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

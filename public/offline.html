@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>No connection</title>
+    <style>
+      :root { color-scheme: light; --bg: #f8fafc; --fg: #0f172a; }
+      [data-theme="dark"] { color-scheme: dark; --bg: #0b1120; --fg: #e2e8f0; }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme]) { color-scheme: dark; --bg: #0b1120; --fg: #e2e8f0; }
+      }
+      body {
+        margin: 0; min-height: 100dvh; display: grid; place-items: center; padding: 24px;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: var(--bg); color: var(--fg);
+      }
+      .card { max-width: 22rem; text-align: center; }
+      h1 { font-size: 1.25rem; margin: 0 0 .5rem; }
+      p { margin: 0 0 1.25rem; font-size: .95rem; opacity: .7; line-height: 1.55; }
+      button {
+        min-height: 44px; padding: 0 1.25rem; border-radius: .75rem; border: 0;
+        background: #0f523d; color: #fff; font: inherit; font-weight: 500;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      // Match whatever theme the app itself is set to, so losing the connection
+      // does not also flip the colours.
+      (function () {
+        try {
+          var m = localStorage.getItem('att_theme');
+          if (m !== 'light' && m !== 'dark' && m !== 'system') m = 'dark';
+          var d = m === 'dark' || (m === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.setAttribute('data-theme', d ? 'dark' : 'light');
+        } catch (e) {}
+      })();
+    </script>
+    <div class="card">
+      <h1>No connection</h1>
+      <p>
+        You were not marked present. Check your signal, then scan the QR code
+        again.
+      </p>
+      <button onclick="location.reload()">Try again</button>
+    </div>
+  </body>
+</html>

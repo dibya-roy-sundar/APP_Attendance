@@ -1,0 +1,48 @@
+{
+  "name": "qr-attendance",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "seed": "tsx scripts/seed.ts",
+    "typecheck": "tsc --noEmit",
+    "e2e:up": "bash test/local/up.sh",
+    "e2e:down": "bash test/local/down.sh",
+    "e2e": "node test/local/e2e.mjs",
+    "e2e:serve": "next start -p 3100",
+    "e2e:edge": "node test/local/edge.mjs",
+    "e2e:load": "node test/local/load.mjs",
+    "e2e:mobile": "node test/local/mobile.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "demo": "node test/local/demo.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.112.3",
+    "exceljs": "^4.4.0",
+    "next": "16.3.2",
+    "qrcode": "^1.5.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "dotenv": "^17.4.2",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.2",
+    "jszip": "^3.10.1",
+    "playwright": "^1.62.1",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.12",
+    "typescript": "^5",
+    "vitest": "^4.1.11"
+  }
+}
