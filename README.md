@@ -62,12 +62,8 @@ npm run dev
 ### First class of the term
 
 1. Open `/admin` and sign in.
-2. Open **More → Registration window**, choose how long (2 / 5 / 10 / 30 min)
-   and tap **Open**. It closes itself when the time is up.
-3. **Start session**, then **Show QR** and project it.
-4. Students scan, type their roll number once, and are marked present.
-5. Close the registration window afterwards. Nobody can claim a roll number
-   while it is closed.
+2. **Start session**, then **Show QR** and project it.
+3. Students scan, type their roll number once, and are marked present.
 
 ### Every class after that
 
@@ -160,27 +156,23 @@ into the grid; tap through from memory or a paper list. Every mark lands as `✎
 A date that already has a session is refused, and the existing one is opened
 instead.
 
-### The registration window
+### Registration, and why there is no window
 
-Registration is the one moment where knowing a roll number is enough to claim an
-identity, and roll numbers are public. So it opens for **a chosen number of
-minutes and shuts itself** — the failure that matters is leaving it open because
-nobody remembered to close it.
+A phone we do not recognise is always offered registration. There used to be an
+admin-controlled window; it was removed deliberately.
 
-While it is open the grid carries a banner naming the risk and counting down,
-with **Close now** beside it. The automatic close is recorded in the audit log
-against `system`, and a guarded update means several polls arriving at once log
-it once rather than six times.
+It only ever defended against somebody claiming an **unclaimed** roll number
+unilaterally, and that case is self-correcting: the real student is told the
+number is taken, tells the admin, and **Reset device** frees it. It gave no
+protection at all against the case that actually has a motive — a student
+registering honestly and then handing their device id to a friend — because that
+needs no window at all. So the toggle, the timer, the countdown and the banner
+were machinery guarding a narrow, recoverable case, and they are gone.
 
-What this does **not** fix, and is worth knowing: within an open window, whoever
-types a roll number first wins it. Somebody in the room can claim an absent
-classmate before that classmate ever enrols, which marks them present. The real
-student then sees "already registered on another phone" — indistinguishable from
-honestly changing handset — and the fix is the same **Reset device**. Nobody
-complains in the case that matters, because the absent student benefited. Keeping
-the window down to a couple of supervised minutes is what limits it; closing it
-properly needs enrollment to require the admin's assent rather than a public
-roll number.
+What is left is honest about its limits. Within a class, anyone holding a live QR
+token can claim any roll number nobody has claimed yet. That is accepted: the
+alternative is enrollment requiring the admin's assent for each of 47 students.
+See **What this does not defend against** below.
 
 ### A student joins late
 
@@ -223,8 +215,15 @@ client-side change rather than a cache.
 
 ### Lost or wiped phone
 
-Tap **⋯** on the student's row → **Reset device**. That clears their binding and
-grants them one fresh claim even while the registration window is closed.
+Tap **⋯** on the student's row → **Reset device**. That clears their binding so
+they can register a new phone.
+
+Two things it deliberately does not do. **It does not touch attendance** — those
+rows key on `student_id` and carry their own `device_id` snapshot, so the history
+of who was marked present survives intact. And it **records what it cleared**:
+the device id and the time it had been registered go into the audit entry before
+the fields are nulled. Otherwise the act of fixing the problem would destroy the
+only evidence of what the problem was.
 
 ### What a student sees
 

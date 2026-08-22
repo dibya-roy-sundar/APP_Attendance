@@ -24,7 +24,6 @@ const MESSAGES: Record<string, string> = {
   ALREADY_CLAIMED: "That roll number is already registered on another phone.",
   DEVICE_ALREADY_BOUND:
     "This phone is already registered to a different student.",
-  ENROLLMENT_CLOSED: "Registration is closed. Ask the admin to open it.",
 };
 
 function formatDate(d: string) {

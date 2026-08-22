@@ -4,7 +4,6 @@ import {
   getSessionById,
   getStudentByDevice,
   getStudentByRollNo,
-  isEnrollmentOpen,
 } from '@/lib/data'
 import { db } from '@/lib/supabase'
 import { verifyToken } from '@/lib/token'
@@ -46,11 +45,17 @@ export async function POST(req: Request) {
   if (!student) return fail('UNKNOWN_ROLL', 404)
   if (student.device_id !== null) return fail('ALREADY_CLAIMED', 409)
 
-  // A device reset grants that one student a claim even outside the window.
-  if (!student.reset_allowed && !(await isEnrollmentOpen())) {
-    return fail('ENROLLMENT_CLOSED', 403)
-  }
-
+  /*
+   * There is no registration window any more.
+   *
+   * It only ever defended against somebody claiming an *unclaimed* roll number
+   * unilaterally, and that case is recoverable: the real student is told the
+   * number is taken, and the admin resets it. It gave no protection at all
+   * against the case that actually has a motive — a student registering
+   * normally and handing their id to a friend — because that needs no window.
+   * So the toggle, the timer and the banner were machinery guarding a narrow,
+   * self-correcting case, and are gone.
+   */
   // Guarded update: `is('device_id', null)` means two phones racing for the same
   // roll number cannot both win, without needing a transaction.
   const { data: claimed, error: claimError } = await db()

@@ -163,8 +163,30 @@ export const MAX_ROLL_LENGTH = 32
 export async function getStudentByRollNo(rollNo: string): Promise<StudentRow | null> {
   const target = rollNo.trim().toLowerCase()
   if (!target || target.length > MAX_ROLL_LENGTH) return null
+
+  // Resolve the roll number against the cached roster: a roll number never
+  // changes which row it belongs to, so that mapping is safe to cache.
   const students = await listStudents()
-  return students.find((s) => s.roll_no.trim().toLowerCase() === target) ?? null
+  const match = students.find((s) => s.roll_no.trim().toLowerCase() === target)
+  if (!match) return null
+
+  /*
+   * Then read that one row live, because `device_id` is mutable and this
+   * decides whether a claim is allowed.
+   *
+   * Serving it from cache is wrong across instances: the admin taps Reset
+   * device, their instance clears its copy, and the student's very next request
+   * lands on a different instance still holding the old binding — which would
+   * tell a student the admin had just freed that their roll number is "already
+   * registered on another phone". One indexed lookup avoids that entirely.
+   */
+  const { data, error } = await db()
+    .from('students')
+    .select('*')
+    .eq('id', match.id)
+    .maybeSingle()
+  if (error) throw error
+  return data
 }
 
 export async function getStudentByDevice(deviceId: string): Promise<StudentRow | null> {
@@ -213,99 +235,6 @@ export async function getRoster(
       isSelf: markSelf && selfRoll !== null && s.roll_no.toLowerCase() === selfRoll,
     }
   })
-}
-
-/** Bounds on how long registration may stay open in one go. */
-export const MIN_ENROLLMENT_MINUTES = 1
-export const MAX_ENROLLMENT_MINUTES = 240
-export const DEFAULT_ENROLLMENT_MINUTES = 5
-
-export function isValidEnrollmentMinutes(v: unknown): v is number {
-  return (
-    typeof v === 'number' &&
-    Number.isInteger(v) &&
-    v >= MIN_ENROLLMENT_MINUTES &&
-    v <= MAX_ENROLLMENT_MINUTES
-  )
-}
-
-const CLOSES_AT_KEY = 'enrollment_closes_at'
-
-export type EnrollmentState = {
-  open: boolean
-  /** When it shuts by itself, or null if it was opened without a limit. */
-  closesAt: string | null
-}
-
-/**
- * Registration is the one window where knowing a public roll number is enough to
- * claim an identity, so it should be open for minutes rather than until somebody
- * remembers to close it. Opening it stores a deadline; the first read after that
- * deadline shuts it for real and records why.
- */
-export async function getEnrollmentState(): Promise<EnrollmentState> {
-  const { data, error } = await db()
-    .from('settings')
-    .select('key, value')
-    .in('key', ['enrollment_open', CLOSES_AT_KEY])
-  if (error) throw error
-
-  const rows = new Map((data ?? []).map((r) => [r.key, r.value]))
-  const flag = rows.get('enrollment_open') === 'true'
-  const closesAtRaw = rows.get(CLOSES_AT_KEY) ?? null
-  const closesAt = closesAtRaw && closesAtRaw !== '' ? closesAtRaw : null
-
-  if (!flag) return { open: false, closesAt: null }
-  if (!closesAt) return { open: true, closesAt: null }
-
-  if (new Date(closesAt).getTime() > Date.now()) return { open: true, closesAt }
-
-  // Past its deadline. Close it on the way through, guarding on the current
-  // value so that concurrent polls cannot each write their own audit entry.
-  const { data: shut, error: shutError } = await db()
-    .from('settings')
-    .update({ value: 'false' })
-    .eq('key', 'enrollment_open')
-    .eq('value', 'true')
-    .select('key')
-  if (shutError) throw shutError
-  if ((shut ?? []).length > 0) {
-    await audit({
-      action: 'CLOSE_ENROLLMENT',
-      actor: 'system',
-      reason: 'window expired',
-    })
-  }
-  return { open: false, closesAt: null }
-}
-
-export async function isEnrollmentOpen(): Promise<boolean> {
-  return (await getEnrollmentState()).open
-}
-
-/**
- * Opens registration for `minutes`, or closes it now.
- *
- * `minutes` is required when opening — leaving it open indefinitely is the
- * failure mode this exists to prevent.
- */
-export async function setEnrollmentOpen(open: boolean, minutes?: number): Promise<string | null> {
-  const closesAt =
-    open && minutes !== undefined
-      ? new Date(Date.now() + minutes * 60_000).toISOString()
-      : null
-
-  const { error } = await db()
-    .from('settings')
-    .upsert(
-      [
-        { key: 'enrollment_open', value: open ? 'true' : 'false' },
-        { key: CLOSES_AT_KEY, value: closesAt ?? '' },
-      ],
-      { onConflict: 'key' }
-    )
-  if (error) throw error
-  return closesAt
 }
 
 export function newSecret(): string {

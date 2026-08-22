@@ -3,7 +3,6 @@ import {
   getDefaultSession,
   getRoster,
   getSessionById,
-  getEnrollmentState,
   listSessions,
   toPublicSession,
 } from '@/lib/data'
@@ -22,9 +21,8 @@ export async function GET(req: NextRequest) {
   const session = sessionId ? await getSessionById(sessionId) : await getDefaultSession()
   if (sessionId && !session) return fail('NO_SESSION', 404)
 
-  const [students, enrollment, sessions] = await Promise.all([
+  const [students, sessions] = await Promise.all([
     getRoster(session?.id ?? null, guard.principal.kind === 'primary'),
-    getEnrollmentState(),
     listSessions(),
   ])
 
@@ -36,8 +34,6 @@ export async function GET(req: NextRequest) {
     students,
     markedCount: students.filter((s) => s.markedAt).length,
     total: students.length,
-    enrollmentOpen: enrollment.open,
-    enrollmentClosesAt: enrollment.closesAt,
     sessions: sessions.map((s) => ({
       id: s.id,
       classDate: s.class_date,

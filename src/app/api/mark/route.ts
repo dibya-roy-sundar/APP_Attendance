@@ -1,5 +1,5 @@
 import { fail, normaliseDeviceId, ok, readJson } from '@/lib/api'
-import { getSessionById, getStudentByDevice, isEnrollmentOpen } from '@/lib/data'
+import { getSessionById, getStudentByDevice } from '@/lib/data'
 import { db } from '@/lib/supabase'
 import { verifyToken } from '@/lib/token'
 
@@ -27,9 +27,9 @@ export async function POST(req: Request) {
 
   const student = await getStudentByDevice(deviceId)
   if (!student) {
-    return (await isEnrollmentOpen())
-      ? ok({ status: 'NEEDS_ENROLL', classDate: session.class_date })
-      : ok({ status: 'NOT_REGISTERED' }, 403)
+    // Any phone we do not recognise is offered registration; a live token
+    // already proves the holder is in the room looking at the projector.
+    return ok({ status: 'NEEDS_ENROLL', classDate: session.class_date })
   }
 
   // The primary key makes a second scan a no-op rather than an error, so a

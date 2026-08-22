@@ -64,7 +64,6 @@ async function main() {
     reset_allowed: false,
     enrolled_at: null,
   })
-  await patch('settings', 'key=eq.enrollment_open', { value: 'true' })
 
   const login = await api('/api/admin/login', {
     method: 'POST',

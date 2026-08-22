@@ -86,7 +86,6 @@ async function main() {
     reset_allowed: false,
     enrolled_at: null,
   })
-  await patch('settings', 'key=eq.enrollment_open', { value: 'false' })
 
   const studentCount = await count('students')
   console.log(`students seeded: ${studentCount}`)
@@ -121,7 +120,6 @@ async function main() {
     ['/api/marks/remove', 'POST', { sessionId: uuid(), studentId: uuid() }],
     ['/api/sessions', 'POST', {}],
     ['/api/sessions/state', 'POST', { sessionId: uuid(), open: false }],
-    ['/api/enrollment', 'POST', { open: true }],
     ['/api/reset-device', 'POST', { studentId: uuid() }],
     ['/api/grants', 'GET', undefined],
     ['/api/students', 'POST', { rollNo: 'MT9999998', name: 'Nobody' }],
@@ -194,93 +192,10 @@ async function main() {
   const students = await select('students', 'select=id,roll_no,name&order=s_no.asc')
   const [rollA, rollB, rollC] = students.slice(0, 3).map((r) => r.roll_no)
 
-  // ── enrollment window ─────────────────────────────────────────────────────
-  console.log('\n— enrollment while the window is closed —')
+  // ── registration ──────────────────────────────────────────────────────────
+  console.log('\n— registration —')
   const deviceA = uuid()
   let t = tokenFor(secret, session.id, nowWindow())
-
-  const closedMark = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t, deviceId: deviceA },
-  })
-  check(
-    'unknown device with enrollment closed → NOT_REGISTERED',
-    closedMark.data?.status === 'NOT_REGISTERED',
-    JSON.stringify(closedMark.data)
-  )
-
-  const closedEnroll = await api('/api/enroll', {
-    method: 'POST',
-    body: { s: session.id, t, rollNo: rollA, deviceId: deviceA },
-  })
-  check(
-    "incognito + someone else's roll, enrollment closed → refused",
-    closedEnroll.status === 403 && closedEnroll.data.error === 'ENROLLMENT_CLOSED',
-    JSON.stringify(closedEnroll.data)
-  )
-
-  console.log('\n— the window closes itself —')
-  for (const bad of [0, 241, 5.5, 'five', null]) {
-    const r = await api('/api/enrollment', {
-      method: 'POST',
-      body: { open: true, minutes: bad },
-      cookie: admin,
-    })
-    check(`minutes=${JSON.stringify(bad)} is refused`, r.data?.error === 'BAD_MINUTES', JSON.stringify(r.data))
-  }
-  const timed = await api('/api/enrollment', {
-    method: 'POST',
-    body: { open: true, minutes: 5 },
-    cookie: admin,
-  })
-  check('opening returns the deadline', Boolean(timed.data?.enrollmentClosesAt), JSON.stringify(timed.data))
-  check(
-    'the deadline is about five minutes out',
-    Math.abs(new Date(timed.data.enrollmentClosesAt).getTime() - Date.now() - 300_000) < 15_000
-  )
-  check(
-    'the roster carries it so the grid can count down',
-    Boolean((await api(`/api/roster?s=${session.id}`, { cookie: admin })).data.enrollmentClosesAt)
-  )
-
-  // Wind the deadline back rather than waiting five minutes.
-  await patch('settings', 'key=eq.enrollment_closes_at', {
-    value: new Date(Date.now() - 1000).toISOString(),
-  })
-  const lapsed = await api('/api/enroll', {
-    method: 'POST',
-    body: { s: session.id, t: tokenFor(secret, session.id, nowWindow()), rollNo: rollC, deviceId: uuid() },
-  })
-  check(
-    'a claim after the deadline is refused',
-    lapsed.data?.error === 'ENROLLMENT_CLOSED',
-    JSON.stringify(lapsed.data)
-  )
-  check(
-    'the stored flag really is off, not just computed off',
-    (await one('settings', 'select=value&key=eq.enrollment_open')).value === 'false'
-  )
-  check(
-    'the automatic close is recorded against the system',
-    (await count('audit_log', 'action=eq.CLOSE_ENROLLMENT&actor=eq.system')) === 1
-  )
-  const beforePolls = await count('audit_log', 'action=eq.CLOSE_ENROLLMENT&actor=eq.system')
-  await api('/api/enrollment', { method: 'POST', body: { open: true, minutes: 5 }, cookie: admin })
-  await patch('settings', 'key=eq.enrollment_closes_at', {
-    value: new Date(Date.now() - 1000).toISOString(),
-  })
-  await Promise.all(
-    Array.from({ length: 6 }, () => api(`/api/roster?s=${session.id}`, { cookie: admin }))
-  )
-  check(
-    'six concurrent polls log the close once, not six times',
-    (await count('audit_log', 'action=eq.CLOSE_ENROLLMENT&actor=eq.system')) === beforePolls + 1
-  )
-
-  console.log('\n— enrollment window open —')
-  await api('/api/enrollment', { method: 'POST', body: { open: true }, cookie: admin })
-
-  t = tokenFor(secret, session.id, nowWindow())
   const needs = await api('/api/mark', {
     method: 'POST',
     body: { s: session.id, t, deviceId: deviceA },
@@ -500,6 +415,78 @@ async function main() {
     check(`${label} is refused`, r.status >= 400 && r.status < 500, `${r.status}`)
   }
 
+  // ── a reset must not cost the student their history ───────────────────────
+  console.log('\n— reset preserves attendance and records what it cleared —')
+  const histStudent = roster.data.students[12]
+  const histDev = uuid()
+  await api('/api/enroll', {
+    method: 'POST',
+    body: { s: session.id, t: tokenFor(secret, session.id, nowWindow()), rollNo: histStudent.rollNo, deviceId: histDev },
+  })
+  const pastSession = await api('/api/sessions', {
+    method: 'POST',
+    body: { classDate: '2026-06-10' },
+    cookie: admin,
+  })
+  await api('/api/marks', {
+    method: 'POST',
+    body: { sessionId: pastSession.data.session.id, studentIds: [histStudent.studentId] },
+    cookie: admin,
+  })
+  const rowsBefore = await count('attendance', `student_id=eq.${histStudent.studentId}`)
+  check('the student has history to lose', rowsBefore >= 2, `${rowsBefore} rows`)
+
+  const wiped = await api('/api/reset-device', {
+    method: 'POST',
+    body: { studentId: histStudent.studentId, reason: 'lost phone' },
+    cookie: admin,
+  })
+  check('reset succeeds', wiped.status === 200)
+  check(
+    'attendance is untouched by a reset',
+    (await count('attendance', `student_id=eq.${histStudent.studentId}`)) === rowsBefore,
+    `${await count('attendance', `student_id=eq.${histStudent.studentId}`)} of ${rowsBefore}`
+  )
+  check('the binding itself is cleared', wiped.data.previousDeviceId === histDev)
+  const resetLog = await one(
+    'audit_log',
+    `select=reason&action=eq.RESET_DEVICE&student_id=eq.${histStudent.studentId}&order=id.desc&limit=1`
+  )
+  check(
+    'the audit entry keeps the device that was cleared',
+    resetLog.reason.includes(histDev),
+    resetLog.reason
+  )
+  check('and the time it had been registered', /registered 20\d\d-/.test(resetLog.reason), resetLog.reason)
+  check("and the admin's own note", resetLog.reason.startsWith('lost phone'), resetLog.reason)
+  const stillNull = await one('students', `select=device_id,enrolled_at&id=eq.${histStudent.studentId}`)
+  check(
+    'the student row is genuinely unbound',
+    stillNull.device_id === null && stillNull.enrolled_at === null
+  )
+
+  console.log('\n— registration needs no window —')
+  const anytime = await api('/api/enroll', {
+    method: 'POST',
+    body: { s: session.id, t: tokenFor(secret, session.id, nowWindow()), rollNo: histStudent.rollNo, deviceId: uuid() },
+  })
+  check(
+    'a reset student re-registers with no window to open',
+    anytime.data?.status === 'ENROLLED',
+    JSON.stringify(anytime.data)
+  )
+  const unknownDevice = await api('/api/mark', {
+    method: 'POST',
+    body: { s: session.id, t: tokenFor(secret, session.id, nowWindow()), deviceId: uuid() },
+  })
+  check(
+    'an unrecognised phone is always offered registration',
+    unknownDevice.data?.status === 'NEEDS_ENROLL',
+    JSON.stringify(unknownDevice.data)
+  )
+  const goneEndpoint = await api('/api/enrollment', { method: 'POST', body: { open: true }, cookie: admin })
+  check('the enrollment endpoint is gone', goneEndpoint.status === 404, `${goneEndpoint.status}`)
+
   // ── reset device ──────────────────────────────────────────────────────────
   console.log('\n— reset device —')
   const reset = await api('/api/reset-device', {
@@ -515,14 +502,17 @@ async function main() {
       return r.device_id === null && r.reset_allowed === true
     })()
   )
-  await api('/api/enrollment', { method: 'POST', body: { open: false }, cookie: admin })
-  t = tokenFor(secret, session.id, nowWindow())
   const reclaim = await api('/api/enroll', {
     method: 'POST',
-    body: { s: session.id, t, rollNo: rollA, deviceId: uuid() },
+    body: {
+      s: session.id,
+      t: tokenFor(secret, session.id, nowWindow()),
+      rollNo: rollA,
+      deviceId: uuid(),
+    },
   })
   check(
-    'a reset student can re-enroll even with the window closed',
+    'a reset student can register a new phone',
     reclaim.data?.status === 'ENROLLED',
     JSON.stringify(reclaim.data)
   )
@@ -774,7 +764,7 @@ async function main() {
 
   check('V holds a live COUNTIF formula', sheet.includes('COUNTIF(F2:U2,'))
   check('W holds a live percentage formula', sheet.includes('COUNT($F$1:$U$1)=0'))
-  check('the two class dates are written as Excel serials', /<c r="F1"[^>]*><v>4\d{4}<\/v>/.test(sheet))
+  check('class dates are written as Excel serials', /<c r="F1"[^>]*><v>4\d{4}<\/v>/.test(sheet))
   check('headers keep the original spelling', shared.includes('Attendnacs'))
   check('the trailing space in "Name " survives', shared.includes('<t xml:space="preserve">Name </t>'))
   const ticks = (sheet.match(/>✓</g) ?? []).length + (shared.match(/>✓</g) ?? []).length
@@ -885,7 +875,8 @@ async function main() {
   const allDates = (await select('sessions', 'select=class_date&order=class_date.asc')).map(
     (r) => r.class_date
   )
-  check('two class dates exist to slice between', allDates.length === 2, JSON.stringify(allDates))
+  const totalClasses = allDates.length
+  check('there are classes to slice between', totalClasses >= 2, JSON.stringify(allDates))
 
   async function exportWith(qs, cookie = admin) {
     const res = await fetch(`${BASE}/api/export${qs}`, { headers: { cookie } })
@@ -900,27 +891,27 @@ async function main() {
   }
 
   const whole = await exportWith('')
-  check('no range exports every class', whole.classes === 2, `${whole.classes}`)
+  check('no range exports every class', whole.classes === totalClasses, `${whole.classes} of ${totalClasses}`)
 
-  const onlyLatest = await exportWith(`?from=${allDates[1]}`)
+  const onlyLatest = await exportWith(`?from=${allDates[totalClasses - 1]}`)
   check('from= drops earlier classes', onlyLatest.classes === 1, `${onlyLatest.classes}`)
 
   const onlyEarliest = await exportWith(`?to=${allDates[0]}`)
   check('to= drops later classes', onlyEarliest.classes === 1, `${onlyEarliest.classes}`)
 
-  const exact = await exportWith(`?from=${allDates[0]}&to=${allDates[1]}`)
-  check('a range covering both keeps both', exact.classes === 2, `${exact.classes}`)
+  const exact = await exportWith(`?from=${allDates[0]}&to=${allDates[totalClasses - 1]}`)
+  check('a range covering all of them keeps all', exact.classes === totalClasses, `${exact.classes}`)
 
   const empty = await exportWith('?from=1990-01-01&to=1990-12-31')
   check('a range with no classes still builds a file', empty.status === 200 && empty.classes === 0)
 
   check(
     'the filename records the range',
-    onlyLatest.filename.includes(allDates[1]),
+    onlyLatest.filename.includes(allDates[totalClasses - 1]),
     onlyLatest.filename
   )
 
-  const badRange = await api(`/api/export?from=${allDates[1]}&to=${allDates[0]}`, { cookie: admin })
+  const badRange = await api(`/api/export?from=${allDates[totalClasses - 1]}&to=${allDates[0]}`, { cookie: admin })
   check('a backwards range is refused', badRange.data?.error === 'BAD_RANGE')
   const badExportDate = await api('/api/export?from=not-a-date', { cookie: admin })
   check('a malformed date is refused', badExportDate.data?.error === 'BAD_DATE')
@@ -1065,7 +1056,6 @@ async function main() {
   // What a deputy MAY NOT do: anything touching identity.
   console.log('\n  deputy is refused identity operations:')
   for (const [path, body] of [
-    ['/api/enrollment', { open: true }],
     ['/api/reset-device', { studentId: dRoster.data.students[0].studentId }],
     ['/api/grants', { label: 'onward', hours: 2 }],
     ['/api/students', { rollNo: 'MT2026903', name: 'Deputy Added' }],
@@ -1076,10 +1066,6 @@ async function main() {
   }
   const dGrantsList = await api('/api/grants', { cookie: deputy })
   check('GET /api/grants → 403 for a deputy', dGrantsList.status === 403)
-  check(
-    'the registration window really did not move',
-    (await one('settings', 'select=value&key=eq.enrollment_open')).value === 'false'
-  )
 
   // Their spreadsheet is view-only and stamped.
   console.log('\n  deputy exports are view-only:')
