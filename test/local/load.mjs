@@ -6,7 +6,8 @@
  *   node test/local/load.mjs
  */
 import { createHmac } from 'node:crypto'
-import { count, one, patch, remove, select } from './db.mjs'
+import { count, one, patch, remove, resetToRoster, select } from './db.mjs'
+import { phone } from './student.mjs'
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
@@ -76,13 +77,7 @@ async function main() {
 
   // ── reset ───────────────────────────────────────────────────────────────
   await remove('admin_grants', 'id=not.is.null')
-  await remove('attendance', 'session_id=not.is.null')
-  await remove('audit_log', 'id=gt.0')
-  await remove('sessions', 'id=not.is.null')
-  await patch('students', 'id=not.is.null', {
-    device_id: null,
-    enrolled_at: null,
-  })
+  await resetToRoster()
 
   const students = await select('students', 'select=roll_no&order=s_no.asc')
   const rolls = students.map((s) => s.roll_no)
@@ -102,7 +97,10 @@ async function main() {
   )
   const session = created.data.session
   const secret = (await one('sessions', `select=secret&id=eq.${session.id}`)).secret
-  const devices = rolls.map(() => crypto.randomUUID())
+  // One phone per student, each with its own keychain — which is what makes 47
+  // concurrent sign-ins genuinely 47 separate signing operations rather than
+  // one shared secret replayed.
+  const phones = rolls.map(() => phone(BASE))
 
   console.log('═'.repeat(64))
   console.log('SCENARIO 1 — first class: all 47 enroll simultaneously')
@@ -111,19 +109,14 @@ async function main() {
   const enrollResults = await Promise.all(
     rolls.map((rollNo, i) =>
       timed(async () => {
-        const r = await post('/api/enroll', {
-          s: session.id,
-          t,
-          rollNo,
-          deviceId: devices[i],
-        })
+        const r = await phones[i].register(session.id, t, rollNo)
         return r.data.status ?? r.data.error ?? `http ${r.status}`
       })
     )
   )
-  report('47 concurrent enrollments', enrollResults, Date.now() - t0)
+  report('47 concurrent passkey registrations', enrollResults, Date.now() - t0)
   console.log(`    attendance rows now: ${await count('attendance')}`)
-  console.log(`    devices bound: ${await count('students', 'device_id=not.is.null')}`)
+  console.log(`    passkeys registered: ${await count('student_credentials')}`)
 
   console.log('\n' + '═'.repeat(64))
   console.log('SCENARIO 2 — every later class: all 47 scan within one window')
@@ -131,14 +124,14 @@ async function main() {
   t0 = Date.now()
   const t2 = tokenFor(secret, session.id, nowWindow())
   const markResults = await Promise.all(
-    devices.map((deviceId) =>
+    phones.map((p) =>
       timed(async () => {
-        const r = await post('/api/mark', { s: session.id, t: t2, deviceId })
+        const r = await p.markPresent(session.id, t2)
         return r.data.status ?? r.data.error ?? `http ${r.status}`
       })
     )
   )
-  report('47 concurrent scans', markResults, Date.now() - t0)
+  report('47 concurrent passkey sign-ins', markResults, Date.now() - t0)
   console.log(`    attendance rows: ${await count('attendance')} (expect 47)`)
 
   console.log('\n' + '═'.repeat(64))
@@ -146,10 +139,10 @@ async function main() {
   t0 = Date.now()
   const t3 = tokenFor(secret, session.id, nowWindow())
   const dupResults = await Promise.all(
-    devices.flatMap((deviceId) =>
+    phones.flatMap((p) =>
       [1, 2, 3].map(() =>
         timed(async () => {
-          const r = await post('/api/mark', { s: session.id, t: t3, deviceId })
+          const r = await p.markPresent(session.id, t3)
           return r.data.status ?? r.data.error ?? `http ${r.status}`
         })
       )
@@ -163,12 +156,9 @@ async function main() {
   await remove('attendance', 'session_id=not.is.null')
   t0 = Date.now()
   const mixed = await Promise.all([
-    ...devices.map((deviceId) =>
+    ...phones.map((p) =>
       timed(async () => {
-        const r = await post(
-          '/api/mark',
-          { s: session.id, t: tokenFor(secret, session.id, nowWindow()), deviceId }
-        )
+        const r = await p.markPresent(session.id, tokenFor(secret, session.id, nowWindow()))
         return r.data.status ?? r.data.error ?? `http ${r.status}`
       })
     ),
@@ -226,9 +216,9 @@ async function main() {
     const tw = tokenFor(secret, session.id, nowWindow())
     const t1 = Date.now()
     const r = await Promise.all(
-      devices.map((deviceId) =>
+      phones.map((p) =>
         timed(async () => {
-          const res = await post('/api/mark', { s: session.id, t: tw, deviceId })
+          const res = await p.markPresent(session.id, tw)
           return res.data.status ?? res.data.error ?? `http ${res.status}`
         })
       )

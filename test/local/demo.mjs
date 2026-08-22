@@ -12,7 +12,7 @@
 import { chromium, devices } from 'playwright'
 import { mkdir, rm } from 'node:fs/promises'
 import { createHmac } from 'node:crypto'
-import { one, patch, remove, select } from './db.mjs'
+import { one, patch, remove, resetToRoster, select } from './db.mjs'
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
@@ -51,14 +51,7 @@ async function main() {
   await mkdir(SHOTS, { recursive: true })
 
   console.log('\nresetting to a clean term before the walkthrough')
-  await remove('admin_grants', 'id=not.is.null')
-  await remove('attendance', 'session_id=not.is.null')
-  await remove('audit_log', 'id=gt.0')
-  await remove('sessions', 'id=not.is.null')
-  await patch('students', 'id=not.is.null', {
-    device_id: null,
-    enrolled_at: null,
-  })
+  await resetToRoster()
 
   const students = await select('students', 'select=id,roll_no,name&order=s_no.asc')
   console.log(`roster: ${students.length} students\n`)
@@ -126,30 +119,49 @@ async function main() {
 
   // ── a student's phone ─────────────────────────────────────────────────────
   console.log('\nSTUDENT (a second phone)')
-  const phone = await browser.newContext({ ...PHONE })
-  const s = await phone.newPage()
+  const phoneCtx = await browser.newContext({ ...PHONE })
+  const s = await phoneCtx.newPage()
   const target = students[35] // MT2026520, Rishank Jain
 
   const scanUrl = () =>
     `${BASE}/m?s=${session.id}&t=${tokenFor(session.secret, session.id, session.window_seconds)}`
 
+  // A virtual fingerprint sensor, so the walkthrough can actually complete.
+  // Chromium only — the sensor is a CDP feature.
+  const cdp = await phoneCtx.newCDPSession(s)
+  await cdp.send('WebAuthn.enable')
+  await cdp.send('WebAuthn.addVirtualAuthenticator', {
+    options: {
+      protocol: 'ctap2',
+      transport: 'internal',
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  })
+
   await s.goto(scanUrl(), { waitUntil: 'networkidle' })
-  await s.waitForSelector('text=registration', { timeout: 15000 })
+  await s.waitForSelector('text=Mark your attendance', { timeout: 15000 })
+  await say(s, 'Scanned the QR. One tap, confirmed with Face ID', 'student-scan')
+  await s.getByRole('button', { name: 'Mark me present' }).click()
+  await s.waitForSelector('text=Set up this phone', { timeout: 15000 })
   await beat(900)
   await say(s, 'Scanned the QR. First time, so it asks for a roll number once', 'student-enrol')
 
   await s.getByLabel('Roll number').fill(target.roll_no)
   await beat(500)
-  await s.getByRole('button', { name: /Register and mark present/ }).click()
+  await s.getByRole('button', { name: /Create passkey and mark present/ }).click()
   await s.waitForSelector('text=Present', { timeout: 15000 })
   await beat(1000)
-  await say(s, `Present — ${target.name}. Phone now bound to this student`, 'student-present')
+  await say(s, `Present — ${target.name}. Passkey now on this phone`, 'student-present')
 
   // Scanning again is a no-op, not an error.
   await s.goto(scanUrl(), { waitUntil: 'networkidle' })
+  await s.getByRole('button', { name: 'Mark me present' }).click()
   await s.waitForSelector('text=Present', { timeout: 15000 })
   await beat(700)
-  await say(s, 'Scanning a second time: still one row, no scary error', 'student-again')
+  await say(s, 'Every later class: one tap, nothing typed', 'student-again')
 
   // ── back to the grid, live ────────────────────────────────────────────────
   console.log('\nADMIN — the mark appears')

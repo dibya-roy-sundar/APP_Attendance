@@ -50,8 +50,6 @@ export async function POST(req: Request) {
       roll_no: rollNo,
       name,
       email: emailRaw || null,
-      device_id: null,
-      enrolled_at: null,
     })
     .select('id, s_no, roll_no, name, email')
     .single()

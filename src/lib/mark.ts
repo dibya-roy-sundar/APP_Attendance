@@ -7,12 +7,12 @@ import { db } from '@/lib/supabase'
  * no-op rather than an error, so a student who touches the sensor twice sees the
  * same tick both times instead of a scary message.
  *
- * `device_id` is deliberately not written any more. Under passkeys the identity
- * is the credential, and the credential id is not a device identifier — the same
- * passkey follows a student to a new phone through iCloud Keychain or Google
- * Password Manager. Recording something that looks like a device but is not one
- * would be worse than recording nothing. The column is left in place for the
- * previous term's rows; see docs/superseded/.
+ * There is no device column any more. Under passkeys the identity is the
+ * credential, and a credential id is not a device identifier — the same passkey
+ * follows a student to a new phone through iCloud Keychain or Google Password
+ * Manager. Recording something that looks like a device but is not one would be
+ * worse than recording nothing, so the column was dropped rather than left to
+ * be misread. See docs/superseded/.
  */
 export async function markPresentForStudent(
   sessionId: string,

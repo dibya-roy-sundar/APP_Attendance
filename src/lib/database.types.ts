@@ -9,8 +9,6 @@ export type StudentRow = {
   roll_no: string
   name: string
   email: string | null
-  device_id: string | null
-  enrolled_at: string | null
 }
 
 export type SessionRow = {
@@ -28,7 +26,6 @@ export type AttendanceRow = {
   session_id: string
   student_id: string
   marked_at: string
-  device_id: string | null
   source: 'scan' | 'manual'
 }
 
@@ -74,7 +71,6 @@ export type AdminGrantRow = {
 export type AuditAction =
   | 'OVERRIDE_MARK'
   | 'OVERRIDE_UNMARK'
-  | 'RESET_DEVICE'
   | 'START_SESSION'
   | 'START_BACKDATED_SESSION'
   | 'OPEN_SESSION'
@@ -82,10 +78,17 @@ export type AuditAction =
   | 'GRANT_ISSUED'
   | 'GRANT_REVOKED'
   | 'EXPORT'
-  | 'CLAIM_DEVICE'
   | 'ADD_STUDENT'
   | 'PASSKEY_REGISTERED'
   | 'PASSKEY_REMOVED'
+  /*
+   * Superseded, and no longer written by anything. Kept out of the union on
+   * purpose: with no data to preserve, the schema was rebuilt clean, so no row
+   * carrying these actions exists any more. See docs/superseded/.
+   *
+   * | 'RESET_DEVICE'
+   * | 'CLAIM_DEVICE'
+   */
 
 export type AuditLogRow = {
   id: number
@@ -117,15 +120,7 @@ export type Database = {
           window_seconds?: number
         }
       >
-      // device_id is optional on insert: passkey marks do not write it, since a
-      // credential is not a device. See src/lib/mark.ts.
-      attendance: Table<
-        AttendanceRow,
-        Omit<AttendanceRow, 'marked_at' | 'device_id'> & {
-          marked_at?: string
-          device_id?: string | null
-        }
-      >
+      attendance: Table<AttendanceRow, Omit<AttendanceRow, 'marked_at'> & { marked_at?: string }>
       login_attempts: Table<
         LoginAttemptRow,
         Omit<LoginAttemptRow, 'id' | 'at'> & { id?: number; at?: string }

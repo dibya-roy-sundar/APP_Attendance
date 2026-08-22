@@ -10,7 +10,8 @@
 import { chromium, devices, webkit } from 'playwright'
 import { mkdir } from 'node:fs/promises'
 import { createHmac } from 'node:crypto'
-import { one, patch, remove, select } from './db.mjs'
+import { one, patch, remove, resetToRoster, select } from './db.mjs'
+import { phone } from './student.mjs'
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
@@ -295,14 +296,7 @@ async function main() {
   if (SHOTS) await mkdir(SHOT_DIR, { recursive: true })
 
   // A term with real data so the grid and calendar are not empty shells.
-  await remove('admin_grants', 'id=not.is.null')
-  await remove('attendance', 'session_id=not.is.null')
-  await remove('audit_log', 'id=gt.0')
-  await remove('sessions', 'id=not.is.null')
-  await patch('students', 'id=not.is.null', {
-    device_id: null,
-    enrolled_at: null,
-  })
+  await resetToRoster()
 
   const students = await select('students', 'select=id,roll_no&order=s_no.asc')
   const login = await fetch(`${BASE}/api/admin/login`, {
@@ -337,8 +331,13 @@ async function main() {
     })
   }
   const sessionRows = await select('sessions', 'select=id,class_date')
-  const studentDevice = '99999999-8888-7777-6666-555555555555'
-  await patch('students', `id=eq.${students[0].id}`, { device_id: studentDevice })
+
+  // One student registers a passkey for real, so /me has a session to render
+  // and the roster shows a passkey count. The software authenticator does this
+  // over the API — the browser contexts below only need the resulting cookie.
+  const studentPhone = phone(BASE)
+  await studentPhone.register(session.id, token(), students[0].roll_no)
+  const studentCookie = studentPhone.cookie
   for (const row of sessionRows.slice(0, 3)) {
     await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/attendance`, {
       method: 'POST',
@@ -354,20 +353,10 @@ async function main() {
       }),
     })
   }
-  // A handful of scans so the roster shows a mix of states.
+  // A handful more sign in, so the roster shows a mix of marked and not.
   for (let i = 1; i < 12; i++) {
-    await patch('students', `id=eq.${students[i].id}`, {
-      device_id: `1111${String(i).padStart(4, '0')}-2222-3333-4444-555555555555`,
-    })
-    await fetch(`${BASE}/api/mark`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        s: session.id,
-        t: token(),
-        deviceId: `1111${String(i).padStart(4, '0')}-2222-3333-4444-555555555555`,
-      }),
-    })
+    const p = phone(BASE)
+    await p.register(session.id, token(), students[i].roll_no)
   }
 
   const origin = new URL(BASE).origin
@@ -397,10 +386,19 @@ async function main() {
         path: '/',
       },
     ])
-    await context.addInitScript(
-      (dev) => window.localStorage.setItem('att_device', dev),
-      studentDevice
-    )
+    // The passkey session, so /me renders a real record. There is nothing to
+    // put in localStorage any more: identity lives in the OS keychain, and this
+    // cookie only grants reading their own page.
+    if (studentCookie) {
+      await context.addCookies([
+        {
+          name: 'att_student',
+          value: studentCookie.replace('att_student=', ''),
+          domain: '127.0.0.1',
+          path: '/',
+        },
+      ])
+    }
 
     const page = await context.newPage()
 

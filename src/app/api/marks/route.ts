@@ -63,7 +63,6 @@ export async function POST(req: Request) {
           student_id: id,
           marked_at: markedAt,
           source: 'manual' as const,
-          device_id: null,
         })),
         { onConflict: 'session_id,student_id', ignoreDuplicates: true }
       )

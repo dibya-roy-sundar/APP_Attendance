@@ -11,7 +11,7 @@
  */
 import { chromium, webkit, devices } from 'playwright'
 import { createHmac } from 'node:crypto'
-import { one, select, remove, patch } from './db.mjs'
+import { one, patch, remove, resetToRoster, select } from './db.mjs'
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
@@ -35,11 +35,7 @@ const tokenFor = (secret, sid, period) =>
     .slice(0, 12)
 
 async function cleanSlate() {
-  await remove('attendance', 'session_id=not.is.null')
-  await remove('sessions', 'id=not.is.null')
-  await remove('audit_log', 'id=gt.0')
-  await remove('login_attempts', 'id=gt.0')
-  await patch('students', 'id=not.is.null', { device_id: null, enrolled_at: null })
+  await resetToRoster()
 }
 
 /** Sign in through the real form, not by injecting a cookie. */
@@ -95,18 +91,25 @@ async function adminJourney(engineName, engine, phone) {
       'select=id,secret,window_seconds&order=opened_at.desc&limit=1'
     )
     const roster = await select('students', 'select=roll_no,name&order=s_no.asc')
+    // A student's phone. Registration needs a real authenticator, so this one
+    // only checks what the screen offers and the expiry path; the passkey flow
+    // itself is exercised in passkeyJourney() below, where a virtual sensor is
+    // available.
     const s = await (await browser.newContext({ ...devices['Pixel 7'] })).newPage()
     await s.goto(`${BASE}/m?s=${live.id}&t=${tokenFor(live.secret, live.id, live.window_seconds)}`, {
       waitUntil: 'networkidle',
     })
+    const offered = await s.locator('body').innerText()
     check(
-      'a normal phone is still promised its roll number is remembered',
-      /not need to type it again/.test(await s.locator('body').innerText())
+      'the scan screen leads with one tap, not a form',
+      /Mark me present/.test(offered) && !/Roll number/.test(offered),
+      offered.replace(/\s+/g, ' ').slice(0, 90)
     )
-    await s.getByLabel('Roll number').fill(roster[0].roll_no)
-    await s.getByRole('button', { name: /Register and mark present/ }).click()
-    await s.waitForSelector('text=Present', { timeout: 30000 })
-    check('a student registers and is marked on the resumed session', true)
+    check(
+      'and says what confirming will take',
+      /Face ID|fingerprint/i.test(offered),
+      offered.replace(/\s+/g, ' ').slice(0, 90)
+    )
 
     await s.goto(`${BASE}/m?s=${live.id}&t=badtokenxxxx`, { waitUntil: 'networkidle' })
     await s.waitForSelector('text=Code expired', { timeout: 30000 })
@@ -119,144 +122,127 @@ async function adminJourney(engineName, engine, phone) {
 }
 
 /**
- * Safari with "Block All Cookies", and some private modes, throw from
- * `setItem`. `deviceId()` then mints a fresh UUID per call, so registering here
- * binds a throwaway id and next class needs an admin reset. Registering must
- * still work — the student really is present — but the page must not promise a
- * link it cannot keep.
+ * The passkey flow in a real browser, with a virtual sensor.
+ *
+ * Chromium only: the virtual authenticator is a CDP feature and WebKit exposes
+ * no equivalent, so there is no way to answer a Face ID prompt in a WebKit test.
+ * What that leaves uncovered is the prompt itself, not our logic — the
+ * assertion bytes and every rejection path are covered by the unit tests
+ * against a spec-built authenticator, and the WebKit *layout* of these screens
+ * is covered by mobile.mjs.
+ *
+ * This replaces two suites that no longer describe anything real: one checked
+ * that a storage-denied phone was warned its binding would not persist, the
+ * other that a purged localStorage still recovered from a cookie. Neither
+ * matters now, and proving that is the first assertion below.
  */
-async function storageDenied(engineName, engine, sessionInfo) {
-  console.log(`\n── ${engineName}: a phone blocking site data ──`)
-  const browser = await engine.launch()
-  try {
-    const ctx = await browser.newContext({ ...devices['iPhone 14'] })
-    await ctx.addInitScript(() => {
-      const boom = () => {
-        throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
-      }
-      try {
-        Object.defineProperty(window, 'localStorage', {
-          configurable: true,
-          get: () => ({
-            getItem: boom,
-            setItem: boom,
-            removeItem: boom,
-            clear: boom,
-            key: boom,
-            length: 0,
-          }),
-        })
-      } catch {
-        /* engine would not let us shadow it; the app is untested here, not broken */
-      }
-    })
-    const p = await ctx.newPage()
-    const errors = []
-    p.on('pageerror', (e) => errors.push(e.message))
-    const { id, secret, window_seconds } = sessionInfo
-    await p.goto(`${BASE}/m?s=${id}&t=${tokenFor(secret, id, window_seconds)}`, {
-      waitUntil: 'networkidle',
-    })
-    const body = (await p.locator('body').innerText()).replace(/\s+/g, ' ')
-
-    check('the scan page still renders rather than white-screening', body.length > 10)
-    check('nothing throws uncaught', errors.length === 0, errors.join(' | '))
-    check('it warns that the link will not be saved', /blocking site data/.test(body))
-    check('it stops promising the roll number is remembered', !/not need to type it again/.test(body))
-  } finally {
-    await browser.close()
-  }
-}
-
-/**
- * Safari's Intelligent Tracking Prevention deletes script-writable storage —
- * localStorage included — after roughly seven days of browser use without
- * interaction on the site. A weekly class sits exactly on that boundary. When
- * it fires, the phone forgets its id while the database still holds it, so the
- * student used to be told their own roll number belonged to another phone and
- * needed an admin reset. The httpOnly cookie is the durable second copy.
- */
-async function storageSurvival(engineName, engine, sessionInfo) {
-  console.log(`\n── ${engineName}: surviving a storage purge between classes ──`)
-  const browser = await engine.launch()
+async function passkeyJourney(sessionInfo) {
+  console.log(`\n── Chromium: registering and signing in with a passkey ──`)
+  const browser = await chromium.launch()
   try {
     const { id, secret, window_seconds } = sessionInfo
     const url = () => `${BASE}/m?s=${id}&t=${tokenFor(secret, id, window_seconds)}`
-    const roster = await select('students', 'select=roll_no,name&order=s_no.asc')
-    const ctx = await browser.newContext({ ...devices['iPhone 14'] })
-    const p = await ctx.newPage()
+    const roster = await select('students', 'select=id,roll_no,name&order=s_no.asc')
+    const student = roster[0]
 
-    // Week one: an ordinary registration.
-    await p.goto(url(), { waitUntil: 'networkidle' })
-    await p.getByLabel('Roll number').fill(roster[0].roll_no)
-    await p.getByRole('button', { name: /Register and mark present/ }).click()
-    await p.waitForSelector('text=Present', { timeout: 30000 })
-    check('registers normally', true)
-    const cookies = await ctx.cookies()
+    const context = await browser.newContext({ ...devices['Pixel 7'] })
+    const page = await context.newPage()
+    const cdp = await context.newCDPSession(page)
+    await cdp.send('WebAuthn.enable')
+    const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
+      options: {
+        protocol: 'ctap2',
+        transport: 'internal',
+        hasResidentKey: true,
+        hasUserVerification: true,
+        isUserVerified: true,
+        automaticPresenceSimulation: true,
+      },
+    })
+
+    // First time on this phone: one roll number, then a passkey.
+    await page.goto(url(), { waitUntil: 'networkidle' })
+    await page.getByRole('button', { name: 'Mark me present' }).click()
+    await page.waitForSelector('text=Set up this phone', { timeout: 30000 })
+    check('a phone with no passkey is offered set-up', true)
+    await page.getByLabel('Roll number').fill(student.roll_no)
+    await page.getByRole('button', { name: /Create passkey and mark present/ }).click()
+    await page.waitForSelector('text=Present', { timeout: 30000 })
+    check('registering creates a passkey and marks present', true)
     check(
-      'the binding is also kept in an httpOnly cookie',
-      cookies.some((c) => c.name === 'att_dev' && c.httpOnly)
+      'the credential is stored against that student',
+      (await count('student_credentials', `student_id=eq.${student.id}`)) === 1
     )
 
-    // Week two, ITP has been through: localStorage gone, cookie intact.
-    await p.evaluate(() => localStorage.clear())
-    await p.goto(url(), { waitUntil: 'networkidle' })
-    await p.waitForTimeout(600)
-    let body = (await p.locator('body').innerText()).replace(/\s+/g, ' ')
+    // Every later class: one tap, nothing typed.
+    await page.goto(url(), { waitUntil: 'networkidle' })
+    await page.getByRole('button', { name: 'Mark me present' }).click()
+    await page.waitForSelector('text=Present', { timeout: 30000 })
+    check('later classes take one tap and no typing', true)
     check(
-      'localStorage purged: still recognised, no roll number retyped',
-      /Present/.test(body) && !/One-time registration/.test(body),
-      body.slice(0, 110)
+      'and still one attendance row',
+      (await count('attendance', `session_id=eq.${id}&student_id=eq.${student.id}`)) === 1
     )
 
-    // The other direction: cookie gone, localStorage intact.
-    await ctx.clearCookies()
-    await p.goto(url(), { waitUntil: 'networkidle' })
-    await p.waitForTimeout(600)
-    body = (await p.locator('body').innerText()).replace(/\s+/g, ' ')
-    // The purge above left localStorage holding a fresh id, which the server
-    // should have adopted. So dropping the cookie must not strand them.
+    // The whole point of the change: browser storage no longer holds identity.
+    await context.clearCookies()
+    await page.evaluate(() => {
+      localStorage.clear()
+      sessionStorage.clear()
+    })
+    await page.goto(url(), { waitUntil: 'networkidle' })
+    await page.getByRole('button', { name: 'Mark me present' }).click()
+    await page.waitForSelector('text=Present', { timeout: 30000 })
+    check('clearing all site data changes nothing — identity is not stored here', true)
+
+    // Their own record needs a session, which the assertion just re-established.
+    await page.goto(`${BASE}/me`, { waitUntil: 'networkidle' })
+    const record = await page.locator('body').innerText()
     check(
-      'the binding healed onto the id the browser now carries',
-      (await one('students', `select=device_id&roll_no=eq.${roster[0].roll_no}`)).device_id ===
-        (await p.evaluate(() => localStorage.getItem('att_device'))),
-      'database and localStorage disagree'
-    )
-    await ctx.clearCookies()
-    await p.goto(url(), { waitUntil: 'networkidle' })
-    await p.waitForTimeout(600)
-    body = (await p.locator('body').innerText()).replace(/\s+/g, ' ')
-    check(
-      'cookie cleared instead: localStorage alone still identifies them',
-      /Present/.test(body) && !/One-time registration/.test(body),
-      body.slice(0, 110)
+      'the passkey session lets them read their own record',
+      record.includes(student.name),
+      record.replace(/\s+/g, ' ').slice(0, 90)
     )
 
-    // Both gone — a genuinely lost phone. Registration is offered, the claim is
-    // refused because the database still holds the old binding, and the message
-    // must say what to do rather than blame "another phone".
-    await ctx.clearCookies()
-    await p.evaluate(() => localStorage.clear())
-    await p.goto(url(), { waitUntil: 'networkidle' })
-    await p.waitForSelector('text=One-time registration', { timeout: 30000 })
-    await p.getByLabel('Roll number').fill(roster[0].roll_no)
-    await p.getByRole('button', { name: /Register and mark present/ }).click()
-    await p.waitForTimeout(1500)
-    body = (await p.locator('body').innerText()).replace(/\s+/g, ' ')
-    check('both stores lost: the claim is refused', /already linked to a phone/.test(body), body.slice(0, 140))
+    // A genuinely lost phone: the keychain itself is gone.
+    await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId })
+    await cdp.send('WebAuthn.addVirtualAuthenticator', {
+      options: {
+        protocol: 'ctap2',
+        transport: 'internal',
+        hasResidentKey: true,
+        hasUserVerification: true,
+        isUserVerified: true,
+        automaticPresenceSimulation: true,
+      },
+    })
+    await context.clearCookies()
+    await page.goto(url(), { waitUntil: 'networkidle' })
+    await page.getByRole('button', { name: 'Mark me present' }).click()
+    await page.waitForSelector('text=Set up this phone', { timeout: 30000 })
+    check('a replacement phone is offered set-up, not an error', true)
+
+    // And recovers itself: a second passkey, no admin, no reset.
+    await page.getByLabel('Roll number').fill(student.roll_no)
+    await page.getByRole('button', { name: /Create passkey and mark present/ }).click()
+    await page.waitForSelector('text=Present', { timeout: 30000 })
+    check('the student recovers with no admin involved', true)
     check(
-      'and it tells them to ask for a device reset rather than blaming another phone',
-      /ask the admin to reset your device/i.test(body) && !/on another phone/.test(body),
-      body.slice(0, 160)
+      'they now hold two passkeys, the lost one and the new',
+      (await count('student_credentials', `student_id=eq.${student.id}`)) === 2
+    )
+    check(
+      'and their attendance was never touched',
+      (await count('attendance', `session_id=eq.${id}&student_id=eq.${student.id}`)) === 1
     )
 
-    // After the admin resets, the same phone can register again.
-    await patch('students', `roll_no=eq.${roster[0].roll_no}`, { device_id: null, enrolled_at: null })
-    await p.goto(url(), { waitUntil: 'networkidle' })
-    await p.getByLabel('Roll number').fill(roster[0].roll_no)
-    await p.getByRole('button', { name: /Register and mark present/ }).click()
-    await p.waitForSelector('text=Present', { timeout: 30000 })
-    check('after an admin device reset it registers again', true)
+    // The admin grid should show the count, since that is how a phone change is
+    // told apart from a problem.
+    const gridPasskeys = (await select(
+      'student_credentials',
+      `select=id&student_id=eq.${student.id}`
+    )).length
+    check('the roster can report more than one passkey', gridPasskeys === 2)
   } finally {
     await browser.close()
   }
@@ -289,20 +275,7 @@ async function main() {
   })
   const live = await one('sessions', 'select=id,secret,window_seconds&order=opened_at.desc&limit=1')
 
-  for (const [name, engine] of [
-    ['WebKit (iOS)', webkit],
-    ['Chromium (Android)', chromium],
-  ]) {
-    await storageDenied(name, engine, live)
-  }
-
-  for (const [name, engine] of [
-    ['WebKit (iOS)', webkit],
-    ['Chromium (Android)', chromium],
-  ]) {
-    await storageSurvival(name, engine, live)
-    await patch('students', 'id=not.is.null', { device_id: null, enrolled_at: null })
-  }
+  await passkeyJourney(live)
 
   await cleanSlate()
 

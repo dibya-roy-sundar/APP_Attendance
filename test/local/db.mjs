@@ -98,3 +98,37 @@ export async function one(table, query) {
   const rows = await select(table, query)
   return rows[0]
 }
+
+/**
+ * Back to nothing but the roster: 47 students, no passkeys, no history.
+ *
+ * Every suite opened with its own list of tables to clear, and each time the
+ * schema changed those lists drifted apart — one of them was still nulling
+ * students.device_id after that column was dropped. The list lives here now, so
+ * a schema change is one edit.
+ *
+ * Children before parents, or the foreign keys refuse. Students themselves are
+ * never deleted: they come from "Soft Skills.xlsx" via `npm run seed`, and a
+ * suite that had to re-seed would be far slower and could reorder s_no.
+ */
+export async function resetToRoster() {
+  await remove('webauthn_challenges', 'challenge=not.is.null')
+  await remove('student_credentials', 'id=not.is.null')
+  await remove('attendance', 'session_id=not.is.null')
+  await remove('audit_log', 'id=gt.0')
+  await remove('login_attempts', 'id=gt.0')
+  await remove('admin_grants', 'id=not.is.null')
+  await remove('sessions', 'id=not.is.null')
+  // Students added by a test, which the spreadsheet does not contain.
+  await remove('students', 's_no=gt.47')
+}
+
+/** What a suite should see before it starts, and leave behind when it ends. */
+export async function rosterOnly() {
+  return {
+    students: await count('students'),
+    credentials: await count('student_credentials'),
+    attendance: await count('attendance'),
+    sessions: await count('sessions'),
+  }
+}

@@ -6,7 +6,8 @@
  *   node test/local/edge.mjs
  */
 import { createHmac } from 'node:crypto'
-import { count, one, patch, remove, select } from './db.mjs'
+import { count, one, patch, remove, resetToRoster, select } from './db.mjs'
+import { phone } from './student.mjs'
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
@@ -59,13 +60,7 @@ async function main() {
   // test would throttle this one out of its own login.
   await remove('login_attempts', 'id=gt.0')
   await remove('admin_grants', 'id=not.is.null')
-  await remove('attendance', 'session_id=not.is.null')
-  await remove('audit_log', 'id=gt.0')
-  await remove('sessions', 'id=not.is.null')
-  await patch('students', 'id=not.is.null', {
-    device_id: null,
-    enrolled_at: null,
-  })
+  await resetToRoster()
 
   const login = await api('/api/admin/login', {
     method: 'POST',
@@ -87,31 +82,22 @@ async function main() {
   // -- regression: LIKE wildcards in a roll number ---------------------------
   console.log('\n- roll number is matched exactly (regression) -')
   for (const probe of ['MT202652_', '%', 'MT%', '_T2026520', 'MT20265%0', '%%%', 'MT_026520']) {
-    const r = await api('/api/enroll', {
-      method: 'POST',
-      body: { s: session.id, t: tok(), rollNo: probe, deviceId: uuid() },
-    })
+    const r = await phone(BASE).register(session.id, tok(), probe)
     check(
       `"${probe}" cannot claim anyone`,
       r.status === 404 && r.data.error === 'UNKNOWN_ROLL',
       `${r.status} ${JSON.stringify(r.data)}`
     )
   }
-  check('nobody got claimed by a wildcard', (await count('students', 'device_id=not.is.null')) === 0)
+  check('nobody got claimed by a wildcard', (await count('student_credentials')) === 0)
 
   console.log('\n- roll number tolerance for honest typing -')
-  const devLower = uuid()
-  const lower = await api('/api/enroll', {
-    method: 'POST',
-    body: { s: session.id, t: tok(), rollNo: rollOf(0).toLowerCase(), deviceId: devLower },
-  })
-  check('lowercase roll number is accepted', lower.data?.status === 'ENROLLED', JSON.stringify(lower.data))
+  const phoneOne = phone(BASE)
+  const lower = await phoneOne.register(session.id, tok(), rollOf(0).toLowerCase())
+  check('lowercase roll number is accepted', lower.data?.status === 'REGISTERED', JSON.stringify(lower.data))
 
-  const spaced = await api('/api/enroll', {
-    method: 'POST',
-    body: { s: session.id, t: tok(), rollNo: `  ${rollOf(1)}  `, deviceId: uuid() },
-  })
-  check('surrounding whitespace is trimmed', spaced.data?.status === 'ENROLLED')
+  const spaced = await phone(BASE).register(session.id, tok(), `  ${rollOf(1)}  `)
+  check('surrounding whitespace is trimmed', spaced.data?.status === 'REGISTERED')
 
   for (const [label, rollNo] of [
     ['an empty roll number', ''],
@@ -119,57 +105,86 @@ async function main() {
     ['a 500-character roll number', 'M'.repeat(500)],
     ['an unrelated roll number', 'XX9999999'],
   ]) {
-    const r = await api('/api/enroll', {
-      method: 'POST',
-      body: { s: session.id, t: tok(), rollNo, deviceId: uuid() },
-    })
+    const r = await phone(BASE).register(session.id, tok(), rollNo)
     check(`${label} is refused cleanly`, r.status < 500 && Boolean(r.data?.error), `${r.status}`)
   }
   for (const bad of [42, null, {}, [], true]) {
-    const r = await api('/api/enroll', {
+    const r = await api('/api/passkey/register/options', {
       method: 'POST',
-      body: { s: session.id, t: tok(), rollNo: bad, deviceId: uuid() },
+      body: { s: session.id, t: tok(), rollNo: bad },
     })
     check(`a ${typeof bad} roll number does not crash`, r.status < 500, `${r.status}`)
   }
 
-  // -- device identity -------------------------------------------------------
-  console.log('\n- device identity -')
-  const second = await api('/api/enroll', {
-    method: 'POST',
-    body: { s: session.id, t: tok(), rollNo: rollOf(2), deviceId: devLower },
-  })
-  check('one phone cannot claim a second student', second.data?.error === 'DEVICE_ALREADY_BOUND')
+  // -- what one phone can and cannot do -------------------------------------
+  //
+  // Device binding enforced "one phone, one student" with a unique column. A
+  // passkey is not a device, so that constraint is gone — and it turns out the
+  // useful half survives anyway: a credential belongs to exactly one student,
+  // so a phone that signs in is always the student it registered as. What it
+  // can now do, deliberately, is hold a second passkey for a second student —
+  // a shared family phone, or the admin's own phone.
+  console.log('\n- one phone, more than one passkey -')
+  const secondStudent = await phoneOne.register(session.id, tok(), rollOf(2))
+  check(
+    'one phone may register a second student',
+    secondStudent.data?.status === 'REGISTERED',
+    JSON.stringify(secondStudent.data)
+  )
+  check(
+    'each passkey belongs to exactly one student',
+    (await count('student_credentials')) === 3
+  )
+  // The authenticator offers the most recent resident credential, so signing in
+  // marks whoever it last registered — never an arbitrary student.
+  const whoAmI = await phoneOne.markPresent(session.id, tok())
+  check(
+    'signing in marks the student that passkey belongs to',
+    whoAmI.data?.rollNo === rollOf(2),
+    JSON.stringify(whoAmI.data)
+  )
 
-  const upper = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t: tok(), deviceId: devLower.toUpperCase() },
-  })
-  check('an uppercased device UUID still resolves', upper.data?.status === 'MARKED', JSON.stringify(upper.data))
-
-  for (const bad of ['', 'not-a-uuid', '12345', uuid().slice(0, -1), null, 7]) {
-    const r = await api('/api/mark', {
+  console.log('\n- a malformed assertion is refused, never crashes -')
+  for (const [label, response] of [
+    ['a missing response', undefined],
+    ['an empty object', {}],
+    ['a response with no id', { response: {} }],
+    ['a string', 'not-an-assertion'],
+    ['a number', 7],
+    ['an id that is not registered', { id: 'AAAAAAAAAAAAAAAAAAAAAA', response: {} }],
+  ]) {
+    const opts = await api('/api/passkey/auth/options', {
       method: 'POST',
-      body: { s: session.id, t: tok(), deviceId: bad },
+      body: { s: session.id, t: tok() },
     })
-    check(`device id ${JSON.stringify(bad)} is refused`, r.data?.error === 'BAD_DEVICE', `${r.status}`)
+    const r = await api('/api/passkey/auth/verify', {
+      method: 'POST',
+      body: { s: session.id, t: tok(), challenge: opts.data?.options?.challenge, response },
+    })
+    check(`${label} is refused cleanly`, r.status >= 400 && r.status < 500, `${r.status}`)
   }
 
   console.log('\n- two phones race for the same roll number -')
+  //
+  // Under device binding exactly one phone could win: the row held a single
+  // device id. Passkeys are one-to-many on purpose, so all three succeed — and
+  // that is the intended behaviour, not a regression. What must still hold is
+  // that three simultaneous claims produce three distinct credentials for one
+  // student and exactly one attendance row.
   const raceRoll = rollOf(5)
-  const raced = await Promise.all(
-    [uuid(), uuid(), uuid()].map((d) =>
-      api('/api/enroll', {
-        method: 'POST',
-        body: { s: session.id, t: tok(), rollNo: raceRoll, deviceId: d },
-      })
-    )
-  )
-  const won = raced.filter((r) => r.data?.status === 'ENROLLED').length
-  check('exactly one phone wins the claim', won === 1, `${won} won`)
+  const raced = await Promise.all([phone(BASE), phone(BASE), phone(BASE)].map((p) =>
+    p.register(session.id, tok(), raceRoll)
+  ))
+  const won = raced.filter((r) => r.data?.status === 'REGISTERED').length
+  check('all three phones register for that student', won === 3, `${won} succeeded`)
+  const raceStudent = students.find((r) => r.roll_no === raceRoll)
   check(
-    'the losers are told it is claimed',
-    raced.filter((r) => r.data?.error === 'ALREADY_CLAIMED').length === 2
+    'three distinct credentials, no duplicates',
+    (await count('student_credentials', `student_id=eq.${raceStudent.id}`)) === 3
+  )
+  check(
+    'and still exactly one attendance row for them',
+    (await count('attendance', `session_id=eq.${session.id}&student_id=eq.${raceStudent.id}`)) === 1
   )
 
   // -- tokens ---------------------------------------------------------------
@@ -185,10 +200,7 @@ async function main() {
     ['a token for another session', tokenFor(secret, uuid(), nowWindow())],
     ['a token signed with another secret', tokenFor('deadbeef', session.id, nowWindow())],
   ]) {
-    const r = await api('/api/mark', {
-      method: 'POST',
-      body: { s: session.id, t, deviceId: devLower },
-    })
+    const r = await phoneOne.markPresent(session.id, t)
     check(`${label} is rejected`, r.data?.error === 'BAD_TOKEN', JSON.stringify(r.data))
   }
 
@@ -197,10 +209,7 @@ async function main() {
   await patch('sessions', `id=eq.${session.id}`, {
     expires_at: new Date(Date.now() - 1).toISOString(),
   })
-  const atBoundary = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t: tok(), deviceId: devLower },
-  })
+  const atBoundary = await phoneOne.markPresent(session.id, tok())
   check('expires_at in the past closes the session', atBoundary.data?.error === 'SESSION_CLOSED')
   await api('/api/sessions/state', {
     method: 'POST',
@@ -227,10 +236,7 @@ async function main() {
     midnightExtend.status === 200 && midnightExtend.data.extended === true,
     JSON.stringify(midnightExtend.data)
   )
-  const midnightScan = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t: tok(), deviceId: devLower },
-  })
+  const midnightScan = await phoneOne.markPresent(session.id, tok())
   check('students can still scan past midnight', midnightScan.data?.status === 'MARKED')
 
   // The protection this must not lose.
@@ -274,7 +280,7 @@ async function main() {
   await remove('attendance', `session_id=eq.${session.id}`)
   const target = students.find((s) => s.roll_no === rollOf(0))
   const collide = await Promise.all([
-    api('/api/mark', { method: 'POST', body: { s: session.id, t: tok(), deviceId: devLower } }),
+    phoneOne.markPresent(session.id, tok()),
     api('/api/marks', {
       method: 'POST',
       body: { sessionId: session.id, studentIds: [target.id] },
@@ -308,9 +314,9 @@ async function main() {
 
   // -- malformed requests ---------------------------------------------------
   console.log('\n- malformed and hostile bodies -')
-  const brokenJson = await api('/api/mark', { method: 'POST', raw: '{"s": "abc",' })
+  const brokenJson = await api('/api/passkey/auth/options', { method: 'POST', raw: '{"s": "abc",' })
   check('truncated JSON gives 4xx, not 500', brokenJson.status >= 400 && brokenJson.status < 500, `${brokenJson.status}`)
-  const emptyBody = await api('/api/mark', { method: 'POST', raw: '' })
+  const emptyBody = await api('/api/passkey/auth/options', { method: 'POST', raw: '' })
   check('an empty body gives 4xx', emptyBody.status >= 400 && emptyBody.status < 500, `${emptyBody.status}`)
   const arrayBody = await api('/api/marks', { method: 'POST', raw: '[1,2,3]', cookie: admin })
   check('a JSON array body gives 4xx', arrayBody.status >= 400 && arrayBody.status < 500, `${arrayBody.status}`)
@@ -457,10 +463,14 @@ async function main() {
 
   // -- student view edges ---------------------------------------------------
   console.log('\n- what a student sees -')
-  const ghostDevice = '11111111-2222-3333-4444-555555555555'
+  // A student who has registered but never been marked present. Registering
+  // used to be a column write; now it takes a real passkey, so this walks the
+  // actual flow and then removes the attendance it necessarily created.
   const neverPresent = students.find((s) => s.roll_no === rollOf(20))
-  await patch('students', `id=eq.${neverPresent.id}`, { device_id: ghostDevice })
-  const zero = await api('/api/me', { method: 'POST', body: { deviceId: ghostDevice } })
+  const absentPhone = phone(BASE)
+  await absentPhone.register(session.id, tok(), neverPresent.roll_no)
+  await remove('attendance', `student_id=eq.${neverPresent.id}`)
+  const zero = await absentPhone.record()
   check('a student with no attendance sees 0 of N', zero.data.present === 0 && zero.data.total > 0)
   check('and a real 0 percent rather than a blank', zero.data.percent === 0)
   check('every class is listed as absent', zero.data.days.every((d) => d.present === false))

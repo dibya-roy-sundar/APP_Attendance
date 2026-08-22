@@ -3,7 +3,8 @@
  * build spec's test checklist. Run via `npm run e2e`.
  */
 import { createHmac } from 'node:crypto'
-import { count, one, patch, remove, select } from './db.mjs'
+import { count, one, patch, remove, resetToRoster, select } from './db.mjs'
+import { phone } from './student.mjs'
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
@@ -81,13 +82,7 @@ async function main() {
   // test would throttle this one out of its own login.
   await remove('login_attempts', 'id=gt.0')
   await remove('admin_grants', 'id=not.is.null')
-  await remove('attendance', 'session_id=not.is.null')
-  await remove('audit_log', 'id=gt.0')
-  await remove('sessions', 'id=not.is.null')
-  await patch('students', 'id=not.is.null', {
-    device_id: null,
-    enrolled_at: null,
-  })
+  await resetToRoster()
 
   const studentCount = await count('students')
   console.log(`students seeded: ${studentCount}`)
@@ -122,7 +117,6 @@ async function main() {
     ['/api/marks/remove', 'POST', { sessionId: uuid(), studentId: uuid() }],
     ['/api/sessions', 'POST', {}],
     ['/api/sessions/state', 'POST', { sessionId: uuid(), open: false }],
-    ['/api/reset-device', 'POST', { studentId: uuid() }],
     ['/api/grants', 'GET', undefined],
     ['/api/students', 'POST', { rollNo: 'MT9999998', name: 'Nobody' }],
     ['/api/grants', 'POST', { label: 'x', hours: 2 }],
@@ -194,101 +188,166 @@ async function main() {
   const students = await select('students', 'select=id,roll_no,name&order=s_no.asc')
   const [rollA, rollB, rollC] = students.slice(0, 3).map((r) => r.roll_no)
 
-  // ── registration ──────────────────────────────────────────────────────────
-  console.log('\n— registration —')
-  const deviceA = uuid()
+  // ── registering a passkey ─────────────────────────────────────────────────
+  console.log('\n— registering a passkey —')
+  const phoneA = phone(BASE)
   let t = tokenFor(secret, session.id, nowWindow())
-  const needs = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t, deviceId: deviceA },
-  })
-  check('unknown device with enrollment open → NEEDS_ENROLL', needs.data?.status === 'NEEDS_ENROLL')
 
-  const enrolled = await api('/api/enroll', {
-    method: 'POST',
-    body: { s: session.id, t, rollNo: rollA, deviceId: deviceA },
-  })
-  check('enrolling claims the roll and marks present', enrolled.data?.status === 'ENROLLED', JSON.stringify(enrolled.data))
+  // A phone with no passkey cannot sign in. The server never learns this — the
+  // authenticator simply has nothing to offer — which is why the screen falls
+  // back to asking for a roll number.
+  const noPasskey = await phoneA.markPresent(session.id, t)
+  check('a phone with no passkey has nothing to sign with', noPasskey.stage === 'no-passkey')
+
+  const registered = await phoneA.register(session.id, t, rollA)
   check(
-    'enrollment wrote exactly one attendance row',
+    'registering creates a passkey and marks present',
+    registered.data?.status === 'REGISTERED',
+    JSON.stringify(registered.data)
+  )
+  check(
+    'registration wrote exactly one attendance row',
     (await count('attendance', `session_id=eq.${session.id}`)) === 1
   )
-
-  const deviceB = uuid()
-  const claimed = await api('/api/enroll', {
-    method: 'POST',
-    body: { s: session.id, t, rollNo: rollA, deviceId: deviceB },
-  })
   check(
-    'roll number already claimed, enrollment open → refused',
-    claimed.status === 409 && claimed.data.error === 'ALREADY_CLAIMED',
-    JSON.stringify(claimed.data)
+    'and exactly one credential',
+    (await count('student_credentials')) === 1
+  )
+  check(
+    'the credential belongs to the student who claimed the roll number',
+    (await one('student_credentials', 'select=student_id')).student_id ===
+      students.find((r) => r.roll_no === rollA).id
   )
 
-  const unknownRoll = await api('/api/enroll', {
-    method: 'POST',
-    body: { s: session.id, t, rollNo: 'MT9999999', deviceId: deviceB },
-  })
-  check('unknown roll number → UNKNOWN_ROLL', unknownRoll.data.error === 'UNKNOWN_ROLL')
+  // Registration is authorised by presence, so a stale token must not do.
+  const staleRegister = await phone(BASE).register(
+    session.id,
+    tokenFor(secret, session.id, nowWindow() - 4),
+    rollB
+  )
+  check(
+    'registering with a stale token is refused',
+    staleRegister.data?.error === 'BAD_TOKEN',
+    JSON.stringify(staleRegister.data)
+  )
+
+  const unknownRoll = await phone(BASE).register(session.id, t, 'MT9999999')
+  check('unknown roll number → UNKNOWN_ROLL', unknownRoll.data?.error === 'UNKNOWN_ROLL')
+
+  // A second phone may register for the same student — that is the whole point
+  // of one-to-many credentials, and what removed the admin device reset.
+  const phoneA2 = phone(BASE)
+  const second = await phoneA2.register(session.id, t, rollA)
+  check(
+    'the same student can register a second phone, with no admin involved',
+    second.data?.status === 'REGISTERED',
+    JSON.stringify(second.data)
+  )
+  check('both credentials are stored', (await count('student_credentials')) === 2)
+  check(
+    'and still just one attendance row for that student',
+    (await count('attendance', `session_id=eq.${session.id}`)) === 1
+  )
+  check(
+    'the second phone signs in on its own passkey',
+    (await phoneA2.markPresent(session.id, tokenFor(secret, session.id, nowWindow())))
+      .data?.rollNo === rollA
+  )
 
   // ── token rotation ────────────────────────────────────────────────────────
   console.log('\n— rotating token —')
   await windowRoom()
   const wNow = nowWindow()
-  const prev = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t: tokenFor(secret, session.id, wNow - 1), deviceId: deviceA },
-  })
+  const prev = await phoneA.markPresent(session.id, tokenFor(secret, session.id, wNow - 1))
   check('token from the previous window w-1 is accepted', prev.data?.status === 'MARKED', JSON.stringify(prev.data))
 
   await windowRoom()
   const wFresh = nowWindow()
-  const next = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t: tokenFor(secret, session.id, wFresh + 1), deviceId: deviceA },
-  })
+  const next = await phoneA.markPresent(session.id, tokenFor(secret, session.id, wFresh + 1))
   check('token from the next window w+1 is rejected', next.data?.error === 'BAD_TOKEN')
 
-  const stale = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t: tokenFor(secret, session.id, wNow - 3), deviceId: deviceA },
-  })
+  const stale = await phoneA.markPresent(session.id, tokenFor(secret, session.id, wNow - 3))
   check(
     'screenshotted QR from 45s ago is rejected',
     stale.data?.error === 'BAD_TOKEN',
     JSON.stringify(stale.data)
   )
 
-  const forged = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t: 'aaaaaaaaaaaa', deviceId: deviceA },
-  })
+  const forged = await phoneA.markPresent(session.id, 'aaaaaaaaaaaa')
   check('forged token is rejected', forged.data?.error === 'BAD_TOKEN')
+
+  // ── the passkey itself must hold up ───────────────────────────────────────
+  console.log('\n— what the assertion has to prove —')
+  t = tokenFor(secret, session.id, nowWindow())
+  const badSig = await phoneA.markPresent(session.id, t, { tamper: 'signature' })
+  check(
+    'a tampered signature is refused',
+    badSig.data?.error === 'BAD_ASSERTION',
+    JSON.stringify(badSig.data)
+  )
+  const badChallenge = await phoneA.markPresent(session.id, t, { tamper: 'challenge' })
+  check(
+    'a challenge the server never issued is refused',
+    badChallenge.data?.error === 'CHALLENGE_EXPIRED',
+    JSON.stringify(badChallenge.data)
+  )
+
+  // Challenges are single-use: the delete that reads one is the gate.
+  const optionsRes = await api('/api/passkey/auth/options', {
+    method: 'POST',
+    body: { s: session.id, t },
+  })
+  const reused = optionsRes.data.options.challenge
+  const first = await api('/api/passkey/auth/verify', {
+    method: 'POST',
+    body: {
+      s: session.id,
+      t,
+      challenge: reused,
+      response: phoneA.authenticator.authenticate(optionsRes.data.options, optionsRes.data.origin),
+    },
+  })
+  check('a fresh challenge verifies once', first.status === 200, JSON.stringify(first.data))
+  const replayed = await api('/api/passkey/auth/verify', {
+    method: 'POST',
+    body: {
+      s: session.id,
+      t,
+      challenge: reused,
+      response: phoneA.authenticator.authenticate(
+        { ...optionsRes.data.options, challenge: reused },
+        optionsRes.data.origin
+      ),
+    },
+  })
+  check(
+    'and the same challenge cannot be spent twice',
+    replayed.data?.error === 'CHALLENGE_EXPIRED',
+    JSON.stringify(replayed.data)
+  )
 
   // ── idempotent marking ────────────────────────────────────────────────────
   console.log('\n— repeat and concurrent scans —')
   t = tokenFor(secret, session.id, nowWindow())
-  const again = await api('/api/mark', { method: 'POST', body: { s: session.id, t, deviceId: deviceA } })
-  check('same student scanning twice succeeds silently', again.status === 200 && again.data.status === 'MARKED')
+  const again = await phoneA.markPresent(session.id, t)
+  check('same student signing in twice succeeds silently', again.status === 200 && again.data.status === 'MARKED')
   check(
     'still exactly one attendance row for that student',
     (await count('attendance', `session_id=eq.${session.id}`)) === 1
   )
 
-  // Two more students enroll, then all three scan at once.
-  const deviceC = uuid()
-  const deviceD = uuid()
-  await api('/api/enroll', { method: 'POST', body: { s: session.id, t, rollNo: rollB, deviceId: deviceC } })
-  await api('/api/enroll', { method: 'POST', body: { s: session.id, t, rollNo: rollC, deviceId: deviceD } })
+  // Two more students register, then all three sign in at once.
+  const phoneB = phone(BASE)
+  const phoneC = phone(BASE)
+  await phoneB.register(session.id, t, rollB)
+  await phoneC.register(session.id, t, rollC)
 
   t = tokenFor(secret, session.id, nowWindow())
   const concurrent = await Promise.all(
-    [deviceA, deviceC, deviceD, deviceA, deviceC].map((d) =>
-      api('/api/mark', { method: 'POST', body: { s: session.id, t, deviceId: d } })
-    )
+    [phoneA, phoneB, phoneC, phoneA, phoneB].map((p) => p.markPresent(session.id, t))
   )
   check(
-    'five simultaneous scans from three phones all succeed',
+    'five simultaneous sign-ins from three phones all succeed',
     concurrent.every((r) => r.data?.status === 'MARKED'),
     JSON.stringify(concurrent.map((r) => r.data?.status ?? r.data?.error))
   )
@@ -299,15 +358,34 @@ async function main() {
 
   // ── /me isolation ─────────────────────────────────────────────────────────
   console.log('\n— /me shows only the caller —')
-  const me = await api('/api/me', { method: 'POST', body: { deviceId: deviceA } })
+  const me = await phoneA.record()
   check('/api/me returns the caller', me.status === 200 && me.data.rollNo === rollA)
   check('/api/me reports 1 of 1 present', me.data.present === 1 && me.data.total === 1)
   const meBody = JSON.stringify(me.data)
   check('/api/me leaks no other roll number', !meBody.includes(rollB) && !meBody.includes(rollC))
-  const meUnknown = await api('/api/me', { method: 'POST', body: { deviceId: uuid() } })
-  check('/api/me for an unknown device → NOT_REGISTERED', meUnknown.status === 404)
-  const meJunk = await api('/api/me', { method: 'POST', body: { deviceId: 'not-a-uuid' } })
-  check('/api/me rejects a non-UUID device id', meJunk.status === 404)
+
+  // A phone that has never signed in carries no session, so there is nothing
+  // to identify it — and unlike the device id it replaced, a session cannot be
+  // guessed or forged, only issued by a verified assertion.
+  const meNobody = await api('/api/me', { method: 'POST', body: {} })
+  check('/api/me with no session → NOT_REGISTERED', meNobody.status === 404)
+  const meForged = await api('/api/me', {
+    method: 'POST',
+    body: {},
+    cookie: `att_student=${students[0].id}.9999999999.not-a-real-signature`,
+  })
+  check('/api/me rejects a forged session cookie', meForged.status === 404)
+
+  // Reading a record is not marking attendance: the session is enough for /me
+  // and useless for anything that records presence.
+  phoneA.forgetSession()
+  const meAfterClear = await phoneA.record()
+  check('clearing the session logs them out of /me', meAfterClear.status === 404)
+  check(
+    'but the passkey still marks them present',
+    (await phoneA.markPresent(session.id, tokenFor(secret, session.id, nowWindow())))
+      .data?.status === 'MARKED'
+  )
 
   // ── roster + toggle ───────────────────────────────────────────────────────
   console.log('\n— roster grid and taps —')
@@ -417,14 +495,15 @@ async function main() {
     check(`${label} is refused`, r.status >= 400 && r.status < 500, `${r.status}`)
   }
 
-  // ── a reset must not cost the student their history ───────────────────────
-  console.log('\n— reset preserves attendance and records what it cleared —')
+  // ── a new phone must not cost the student their history ──────────────────
+  //
+  // This replaces the old "reset preserves attendance" case. There is no reset
+  // any more: the point is that a student who turns up on a different phone
+  // recovers by themselves and keeps everything.
+  console.log('\n— a new phone keeps the history, and needs no admin —')
   const histStudent = roster.data.students[12]
-  const histDev = uuid()
-  await api('/api/enroll', {
-    method: 'POST',
-    body: { s: session.id, t: tokenFor(secret, session.id, nowWindow()), rollNo: histStudent.rollNo, deviceId: histDev },
-  })
+  const histPhone = phone(BASE)
+  await histPhone.register(session.id, tokenFor(secret, session.id, nowWindow()), histStudent.rollNo)
   const pastSession = await api('/api/sessions', {
     method: 'POST',
     body: { classDate: '2026-06-10' },
@@ -438,83 +517,49 @@ async function main() {
   const rowsBefore = await count('attendance', `student_id=eq.${histStudent.studentId}`)
   check('the student has history to lose', rowsBefore >= 2, `${rowsBefore} rows`)
 
-  const wiped = await api('/api/reset-device', {
-    method: 'POST',
-    body: { studentId: histStudent.studentId, reason: 'lost phone' },
-    cookie: admin,
-  })
-  check('reset succeeds', wiped.status === 200)
+  // A genuinely lost phone: keychain and session both gone.
+  histPhone.wipe()
+  const strandedRead = await histPhone.record()
+  check('the lost phone can no longer read their record', strandedRead.status === 404)
+
+  const replacement = phone(BASE)
+  const recovered = await replacement.register(
+    session.id,
+    tokenFor(secret, session.id, nowWindow()),
+    histStudent.rollNo
+  )
   check(
-    'attendance is untouched by a reset',
+    'a replacement phone registers itself, with no admin and no reset',
+    recovered.data?.status === 'REGISTERED',
+    JSON.stringify(recovered.data)
+  )
+  check(
+    'attendance is untouched by the change of phone',
     (await count('attendance', `student_id=eq.${histStudent.studentId}`)) === rowsBefore,
     `${await count('attendance', `student_id=eq.${histStudent.studentId}`)} of ${rowsBefore}`
   )
-  check('the binding itself is cleared', wiped.data.previousDeviceId === histDev)
-  const resetLog = await one(
+  check(
+    'the student now holds two credentials, the old one and the new',
+    (await count('student_credentials', `student_id=eq.${histStudent.studentId}`)) === 2
+  )
+  const passkeyLog = await one(
     'audit_log',
-    `select=reason&action=eq.RESET_DEVICE&student_id=eq.${histStudent.studentId}&order=id.desc&limit=1`
+    `select=reason,actor&action=eq.PASSKEY_REGISTERED&student_id=eq.${histStudent.studentId}&order=id.desc&limit=1`
   )
-  check(
-    'the audit entry keeps the device that was cleared',
-    resetLog.reason.includes(histDev),
-    resetLog.reason
-  )
-  check('and the time it had been registered', /registered 20\d\d-/.test(resetLog.reason), resetLog.reason)
-  check("and the admin's own note", resetLog.reason.startsWith('lost phone'), resetLog.reason)
-  const stillNull = await one('students', `select=device_id,enrolled_at&id=eq.${histStudent.studentId}`)
-  check(
-    'the student row is genuinely unbound',
-    stillNull.device_id === null && stillNull.enrolled_at === null
-  )
+  check('registering a passkey is audited', passkeyLog !== undefined)
+  check('and attributed to the student, not an admin', passkeyLog?.actor === 'student', String(passkeyLog?.actor))
 
-  console.log('\n— registration needs no window —')
-  const anytime = await api('/api/enroll', {
-    method: 'POST',
-    body: { s: session.id, t: tokenFor(secret, session.id, nowWindow()), rollNo: histStudent.rollNo, deviceId: uuid() },
-  })
-  check(
-    'a reset student re-registers with no window to open',
-    anytime.data?.status === 'ENROLLED',
-    JSON.stringify(anytime.data)
-  )
-  const unknownDevice = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t: tokenFor(secret, session.id, nowWindow()), deviceId: uuid() },
-  })
-  check(
-    'an unrecognised phone is always offered registration',
-    unknownDevice.data?.status === 'NEEDS_ENROLL',
-    JSON.stringify(unknownDevice.data)
-  )
-  const goneEndpoint = await api('/api/enrollment', { method: 'POST', body: { open: true }, cookie: admin })
-  check('the enrollment endpoint is gone', goneEndpoint.status === 404, `${goneEndpoint.status}`)
-
-  // ── reset device ──────────────────────────────────────────────────────────
-  console.log('\n— reset device —')
-  const reset = await api('/api/reset-device', {
-    method: 'POST',
-    body: { studentId: scanned.studentId },
-    cookie: admin,
-  })
-  check('reset device succeeds', reset.status === 200)
-  check(
-    'the device binding is cleared',
-    (await one('students', `select=device_id&id=eq.${scanned.studentId}`)).device_id === null
-  )
-  const reclaim = await api('/api/enroll', {
-    method: 'POST',
-    body: {
-      s: session.id,
-      t: tokenFor(secret, session.id, nowWindow()),
-      rollNo: rollA,
-      deviceId: uuid(),
-    },
-  })
-  check(
-    'a reset student can register a new phone',
-    reclaim.data?.status === 'ENROLLED',
-    JSON.stringify(reclaim.data)
-  )
+  console.log('\n— the removed endpoints really are gone —')
+  for (const [path, body] of [
+    ['/api/reset-device', { studentId: histStudent.studentId }],
+    ['/api/enroll', { s: session.id, t: 'x', rollNo: histStudent.rollNo }],
+    ['/api/mark', { s: session.id, t: 'x' }],
+    ['/api/admin/claim-device', {}],
+    ['/api/enrollment', { open: true }],
+  ]) {
+    const gone = await api(path, { method: 'POST', body, cookie: admin })
+    check(`${path} is gone`, gone.status === 404, `${gone.status}`)
+  }
 
   // ── session controls the admin actually has ───────────────────────────────
   console.log('\n— extend, retune and stop —')
@@ -572,20 +617,14 @@ async function main() {
   )
 
   await windowRoom(8000, 60)
-  const at60 = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t: tokenFor(secret, session.id, nowWindow(60)), deviceId: deviceC },
-  })
+  const at60 = await phoneC.markPresent(session.id, tokenFor(secret, session.id, nowWindow(60)))
   check(
     'a token minted at the new 60s period is accepted',
     at60.data?.status === 'MARKED',
     JSON.stringify(at60.data)
   )
 
-  const at15 = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t: tokenFor(secret, session.id, nowWindow(15)), deviceId: deviceC },
-  })
+  const at15 = await phoneC.markPresent(session.id, tokenFor(secret, session.id, nowWindow(15)))
   check(
     'a token minted at the old 15s period is now rejected',
     at15.data?.error === 'BAD_TOKEN',
@@ -620,10 +659,7 @@ async function main() {
   )
   const stoppedToken = await api(`/api/token?s=${session.id}`, { cookie: admin })
   check('no token is issued once stopped', stoppedToken.status === 409)
-  const stoppedMark = await api('/api/mark', {
-    method: 'POST',
-    body: { s: session.id, t: tokenFor(secret, session.id, nowWindow()), deviceId: deviceC },
-  })
+  const stoppedMark = await phoneC.markPresent(session.id, tokenFor(secret, session.id, nowWindow()))
   check('scanning a stopped session is refused', stoppedMark.data?.error === 'SESSION_CLOSED')
 
   const resumed = await api('/api/sessions/state', {
@@ -670,7 +706,7 @@ async function main() {
     expires_at: new Date(Date.now() - 60_000).toISOString(),
   })
   t = tokenFor(secret, session.id, nowWindow())
-  const expired = await api('/api/mark', { method: 'POST', body: { s: session.id, t, deviceId: deviceC } })
+  const expired = await phoneC.markPresent(session.id, t)
   check('expired session → SESSION_CLOSED, not a stack trace', expired.status === 409 && expired.data.error === 'SESSION_CLOSED')
   const expiredToken = await api(`/api/token?s=${session.id}`, { cookie: admin })
   check('no token is issued for an expired session', expiredToken.status === 409)
@@ -681,10 +717,7 @@ async function main() {
   })
   check('the admin can still mark on an expired session', stillTaps.status === 200)
 
-  const missing = await api('/api/mark', {
-    method: 'POST',
-    body: { s: uuid(), t, deviceId: deviceC },
-  })
+  const missing = await phoneC.markPresent(uuid(), t)
   check('unknown session id → SESSION_CLOSED', missing.data.error === 'SESSION_CLOSED')
 
   // ── backdated sessions ────────────────────────────────────────────────────
@@ -768,7 +801,7 @@ async function main() {
   const meExport = await fetch(`${BASE}/api/me/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ deviceId: deviceC }),
+    body: JSON.stringify({}),
   })
   const meBuf = Buffer.from(await meExport.arrayBuffer())
   const meZip = await JSZip.loadAsync(meBuf)
@@ -1050,7 +1083,6 @@ async function main() {
   // What a deputy MAY NOT do: anything touching identity.
   console.log('\n  deputy is refused identity operations:')
   for (const [path, body] of [
-    ['/api/reset-device', { studentId: dRoster.data.students[0].studentId }],
     ['/api/grants', { label: 'onward', hours: 2 }],
     ['/api/students', { rollNo: 'MT2026903', name: 'Deputy Added' }],
     ['/api/grants/revoke', { grantId }],
