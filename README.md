@@ -338,7 +338,15 @@ Three things it exists to catch, because all three were real:
 
 The app installs to the home screen on both platforms: manifest with 192/512 and
 maskable icons, an `apple-touch-icon`, `standalone` display, theme colour, and
-safe-area insets so the grid clears the notch and home indicator. A deliberately
+safe-area insets so the grid clears the notch and home indicator. Long-pressing
+the icon offers **My attendance** and **Admin** as shortcuts.
+
+`start_url` is `/`, the chooser — not `/me`. Installed, the app runs without an
+address bar, so landing an unregistered phone straight on `/me` left it looking
+at "Not registered" with nothing to tap and no way to reach `/admin`. For the
+same reason every terminal card — not registered, code expired, offline, no
+connection — carries a link onward. A screen with no exit is a screen that
+traps somebody. A deliberately
 conservative service worker gives a real offline page instead of the browser's
 error screen — it never caches `/api/`, because a cached "you are present" would
 be a lie.

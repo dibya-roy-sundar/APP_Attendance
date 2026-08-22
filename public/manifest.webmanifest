@@ -2,19 +2,40 @@
   "name": "Soft Skills Attendance",
   "short_name": "Attendance",
   "description": "Scan the projected QR code to be marked present.",
-  "start_url": "/me",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#f8fafc",
   "theme_color": "#0f523d",
   "icons": [
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ],
   "shortcuts": [
-    { "name": "My attendance", "url": "/me" },
-    { "name": "Instructor", "url": "/admin" }
+    {
+      "name": "My attendance",
+      "url": "/me"
+    },
+    {
+      "name": "Admin",
+      "url": "/admin"
+    }
   ]
 }
