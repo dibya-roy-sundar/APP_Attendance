@@ -11,9 +11,11 @@
  */
 import { chromium, webkit, devices } from 'playwright'
 import { createHmac } from 'node:crypto'
-import { one, patch, remove, resetToRoster, select } from './db.mjs'
+import { count, one, patch, remove, resetToRoster, select } from './db.mjs'
 
-const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3100'
+// localhost, not 127.0.0.1: WebAuthn will not accept an IP address as a
+// Relying Party ID, so a passkey cannot be created on 127.0.0.1 at all.
+const BASE = process.env.BASE_URL ?? 'http://localhost:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 let pass = 0
 const failures = []
@@ -111,7 +113,10 @@ async function adminJourney(engineName, engine, phone) {
       offered.replace(/\s+/g, ' ').slice(0, 90)
     )
 
+    // A stale token no longer shows up on load: WebAuthn needs a user gesture,
+    // so nothing is attempted until the button is tapped.
     await s.goto(`${BASE}/m?s=${live.id}&t=badtokenxxxx`, { waitUntil: 'networkidle' })
+    await s.getByRole('button', { name: 'Mark me present' }).click()
     await s.waitForSelector('text=Code expired', { timeout: 30000 })
     const expired = await s.locator('body').innerText()
     check('the expiry notice does not hardcode a rotation', !/15 seconds/.test(expired))
@@ -167,7 +172,7 @@ async function passkeyJourney(sessionInfo) {
     check('a phone with no passkey is offered set-up', true)
     await page.getByLabel('Roll number').fill(student.roll_no)
     await page.getByRole('button', { name: /Create passkey and mark present/ }).click()
-    await page.waitForSelector('text=Present', { timeout: 30000 })
+    await page.getByText('Present', { exact: true }).waitFor({ timeout: 30000 })
     check('registering creates a passkey and marks present', true)
     check(
       'the credential is stored against that student',
@@ -177,7 +182,7 @@ async function passkeyJourney(sessionInfo) {
     // Every later class: one tap, nothing typed.
     await page.goto(url(), { waitUntil: 'networkidle' })
     await page.getByRole('button', { name: 'Mark me present' }).click()
-    await page.waitForSelector('text=Present', { timeout: 30000 })
+    await page.getByText('Present', { exact: true }).waitFor({ timeout: 30000 })
     check('later classes take one tap and no typing', true)
     check(
       'and still one attendance row',
@@ -192,7 +197,7 @@ async function passkeyJourney(sessionInfo) {
     })
     await page.goto(url(), { waitUntil: 'networkidle' })
     await page.getByRole('button', { name: 'Mark me present' }).click()
-    await page.waitForSelector('text=Present', { timeout: 30000 })
+    await page.getByText('Present', { exact: true }).waitFor({ timeout: 30000 })
     check('clearing all site data changes nothing — identity is not stored here', true)
 
     // Their own record needs a session, which the assertion just re-established.
@@ -225,7 +230,7 @@ async function passkeyJourney(sessionInfo) {
     // And recovers itself: a second passkey, no admin, no reset.
     await page.getByLabel('Roll number').fill(student.roll_no)
     await page.getByRole('button', { name: /Create passkey and mark present/ }).click()
-    await page.waitForSelector('text=Present', { timeout: 30000 })
+    await page.getByText('Present', { exact: true }).waitFor({ timeout: 30000 })
     check('the student recovers with no admin involved', true)
     check(
       'they now hold two passkeys, the lost one and the new',

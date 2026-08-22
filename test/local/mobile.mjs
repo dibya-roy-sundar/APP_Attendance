@@ -13,7 +13,9 @@ import { createHmac } from 'node:crypto'
 import { one, patch, remove, resetToRoster, select } from './db.mjs'
 import { phone } from './student.mjs'
 
-const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3100'
+// localhost, not 127.0.0.1: WebAuthn will not accept an IP address as a
+// Relying Party ID, so a passkey cannot be created on 127.0.0.1 at all.
+const BASE = process.env.BASE_URL ?? 'http://localhost:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 const SHOTS = process.argv.includes('--shots')
 /** Which theme to audit: `--theme light` or `--theme dark` (default). */
@@ -382,7 +384,7 @@ async function main() {
       {
         name: 'att_admin',
         value: adminCookie.replace('att_admin=', ''),
-        domain: '127.0.0.1',
+        domain: 'localhost',
         path: '/',
       },
     ])
@@ -394,7 +396,7 @@ async function main() {
         {
           name: 'att_student',
           value: studentCookie.replace('att_student=', ''),
-          domain: '127.0.0.1',
+          domain: 'localhost',
           path: '/',
         },
       ])

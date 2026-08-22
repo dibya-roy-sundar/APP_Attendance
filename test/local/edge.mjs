@@ -9,7 +9,9 @@ import { createHmac } from 'node:crypto'
 import { count, one, patch, remove, resetToRoster, select } from './db.mjs'
 import { phone } from './student.mjs'
 
-const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3100'
+// localhost, not 127.0.0.1: WebAuthn will not accept an IP address as a
+// Relying Party ID, so a passkey cannot be created on 127.0.0.1 at all.
+const BASE = process.env.BASE_URL ?? 'http://localhost:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 const WINDOW = 15
 
@@ -533,10 +535,10 @@ async function main() {
     } else {
       // No canonical origin configured, so falling back to the request origin
       // is correct — that is what keeps `next dev` and this harness working.
-      // Same origin as the request, though not necessarily the same spelling:
-      // Next resolves req.url through the Host header, so 127.0.0.1 comes back
-      // as localhost. What matters is that it stayed local rather than reaching
-      // for a remote host.
+      // The origin the browser actually used, taken from the Host header —
+      // which matters because a passkey's Relying Party ID must be a suffix of
+      // the document host, and Next's own req.url normalisation does not
+      // preserve that.
       const fell = new URL(tok.data.scanUrl)
       check(
         'with no APP_ORIGIN it falls back to the request origin',

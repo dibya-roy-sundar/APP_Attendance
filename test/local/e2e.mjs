@@ -6,7 +6,9 @@ import { createHmac } from 'node:crypto'
 import { count, one, patch, remove, resetToRoster, select } from './db.mjs'
 import { phone } from './student.mjs'
 
-const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3100'
+// localhost, not 127.0.0.1: WebAuthn will not accept an IP address as a
+// Relying Party ID, so a passkey cannot be created on 127.0.0.1 at all.
+const BASE = process.env.BASE_URL ?? 'http://localhost:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 const DEFAULT_WINDOW = 15
 
@@ -798,11 +800,14 @@ async function main() {
   check('the export contains ✓ marks', ticks > 0)
   check('the export never writes ✎ — manual and scanned look identical', !sheet.includes('✎') && !shared.includes('✎'))
 
+  // Their own export needs the passkey session, exactly as /me does — and
+  // phoneB is the phone that holds rollB's passkey.
   const meExport = await fetch(`${BASE}/api/me/export`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', cookie: phoneB.cookie ?? '' },
     body: JSON.stringify({}),
   })
+  check('the student export needs a session', meExport.status === 200, `HTTP ${meExport.status}`)
   const meBuf = Buffer.from(await meExport.arrayBuffer())
   const meZip = await JSZip.loadAsync(meBuf)
   const meShared = await meZip.file('xl/sharedStrings.xml').async('string')

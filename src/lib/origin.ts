@@ -26,8 +26,29 @@ export function canonicalOrigin(req?: Request): string {
   const alias = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim()
   if (alias) return `https://${alias.replace(/^https?:\/\//, '').replace(/\/+$/, '')}`
 
-  if (req) return new URL(req.url).origin
+  if (req) return requestOrigin(req)
   return ''
+}
+
+/**
+ * The origin as the *browser* sees it, taken from the Host header rather than
+ * `req.url`.
+ *
+ * Next resolves `req.url` through its own normalisation, which reports
+ * `localhost` for a request the browser actually made to `127.0.0.1`. That
+ * difference is invisible almost everywhere — and fatal for passkeys, because
+ * WebAuthn requires the Relying Party ID to be a suffix of the document's host.
+ * A page on `127.0.0.1` handed an RP ID of `localhost` makes the browser refuse
+ * to create a credential at all, with no request reaching the server to explain
+ * why.
+ */
+function requestOrigin(req: Request): string {
+  const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host')
+  if (!host) return new URL(req.url).origin
+  const proto =
+    req.headers.get('x-forwarded-proto')?.split(',')[0].trim() ??
+    new URL(req.url).protocol.replace(':', '')
+  return `${proto}://${host}`
 }
 
 /** The URL that goes into the QR code. */

@@ -14,7 +14,9 @@ import { mkdir, rm } from 'node:fs/promises'
 import { createHmac } from 'node:crypto'
 import { one, patch, remove, resetToRoster, select } from './db.mjs'
 
-const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3100'
+// localhost, not 127.0.0.1: WebAuthn will not accept an IP address as a
+// Relying Party ID, so a passkey cannot be created on 127.0.0.1 at all.
+const BASE = process.env.BASE_URL ?? 'http://localhost:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 const FAST = process.argv.includes('--fast')
 const HEADLESS = process.argv.includes('--headless')
@@ -152,14 +154,14 @@ async function main() {
   await s.getByLabel('Roll number').fill(target.roll_no)
   await beat(500)
   await s.getByRole('button', { name: /Create passkey and mark present/ }).click()
-  await s.waitForSelector('text=Present', { timeout: 15000 })
+  await s.getByText('Present', { exact: true }).waitFor({ timeout: 15000 })
   await beat(1000)
   await say(s, `Present — ${target.name}. Passkey now on this phone`, 'student-present')
 
   // Scanning again is a no-op, not an error.
   await s.goto(scanUrl(), { waitUntil: 'networkidle' })
   await s.getByRole('button', { name: 'Mark me present' }).click()
-  await s.waitForSelector('text=Present', { timeout: 15000 })
+  await s.getByText('Present', { exact: true }).waitFor({ timeout: 15000 })
   await beat(700)
   await say(s, 'Every later class: one tap, nothing typed', 'student-again')
 

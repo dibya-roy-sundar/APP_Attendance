@@ -33,7 +33,7 @@ export const select = (table, query = '') => rest(`${table}?${query}`)
 /**
  * There is one Supabase project, so these suites write to the same database the
  * class uses. Every harness here opens by deleting attendance and nulling every
- * device binding, which on a teaching day destroys the real register — and the
+ * passkey, which on a teaching day destroys the real register — and the
  * .xlsx export is the only copy of it.
  *
  * So a destructive call has to be asked for out loud:
@@ -55,7 +55,7 @@ function assertWipeAllowed(verb, table, query) {
         [
           '',
           `  WARNING: writing to Supabase project ${projectRef} — the database production uses.`,
-          '  Attendance, sessions and device bindings in it are about to be destroyed.',
+          '  Attendance, sessions, passkeys and audit history in it will be destroyed.',
           '',
         ].join('\n')
       )
