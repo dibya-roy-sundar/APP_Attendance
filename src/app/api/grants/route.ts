@@ -1,6 +1,6 @@
 import { actorOf, generateCode, hashCode } from '@/lib/admin'
-import { fail, guardPrimary, ok, readJson } from '@/lib/api'
-import { audit } from '@/lib/data'
+import { fail, guardPrimary, isUuid, ok, readJson } from '@/lib/api'
+import { audit, listStudents } from '@/lib/data'
 import { db } from '@/lib/supabase'
 
 const MIN_HOURS = 1
@@ -46,9 +46,19 @@ export async function POST(req: Request) {
   if (!guard.ok) return guard.response
 
   const body = await readJson(req)
-  const label = typeof body.label === 'string' ? body.label.trim().slice(0, MAX_LABEL) : ''
   const hours = body.hours ?? 8
-  if (!label) return fail('MISSING_LABEL')
+
+  /*
+   * Access is granted to somebody already on the roster, chosen by id — the
+   * label is then derived here rather than accepted from the client, so a
+   * request cannot invent a person who does not exist or mislabel a real one.
+   * The name is what gets stamped on their view-only export, so it has to be
+   * trustworthy.
+   */
+  if (!isUuid(body.studentId)) return fail('MISSING_STUDENT')
+  const student = (await listStudents()).find((s) => s.id === body.studentId)
+  if (!student) return fail('UNKNOWN_STUDENT', 404)
+  const label = `${student.name.trim()} (${student.roll_no})`.slice(0, MAX_LABEL)
   if (
     typeof hours !== 'number' ||
     !Number.isFinite(hours) ||

@@ -75,7 +75,7 @@ async function main() {
   const teacher = await browser.newContext({ ...PHONE })
   const t = await teacher.newPage()
 
-  console.log('INSTRUCTOR')
+  console.log('ADMIN')
   await t.goto(`${BASE}/`, { waitUntil: 'networkidle' })
   await say(t, 'Landing page, dark by default, with the theme switch', 'home-dark')
 
@@ -86,9 +86,9 @@ async function main() {
   await t.getByRole('button', { name: 'Dark', exact: true }).click()
   await beat(600)
 
-  await t.getByRole('link', { name: 'Instructor' }).click()
+  await t.getByRole('link', { name: 'Admin' }).click()
   await t.waitForLoadState('networkidle')
-  await say(t, 'Instructor sign-in — password or a temporary access code', 'admin-login')
+  await say(t, 'Admin sign-in — password or a temporary access code', 'admin-login')
 
   await t.getByLabel('Password or access code').fill(ADMIN_PASSWORD)
   await t.getByRole('button', { name: 'Sign in' }).click()
@@ -156,7 +156,7 @@ async function main() {
   await say(s, 'Scanning a second time: still one row, no scary error', 'student-again')
 
   // ── back to the grid, live ────────────────────────────────────────────────
-  console.log('\nINSTRUCTOR — the mark appears')
+  console.log('\nADMIN — the mark appears')
   await t.waitForTimeout(5200) // the grid polls every 5s
   await say(t, 'The scan has appeared on the grid with its time', 'admin-one-marked')
 
@@ -188,7 +188,9 @@ async function main() {
   await t.getByRole('button', { name: 'Manage' }).click()
   await beat(700)
   await say(t, 'Temporary access, for a day someone else covers the class', 'admin-access')
-  await t.getByPlaceholder('e.g. Anita (TA)').fill('Anita (TA)')
+  await t.getByPlaceholder(/Search the roster/).fill('Rishank')
+  await t.waitForTimeout(400)
+  await t.getByRole('button', { name: /MT2026520/ }).first().click()
   await t.getByRole('button', { name: '4h', exact: true }).click()
   await t.getByRole('button', { name: 'Issue code' }).click()
   await t.waitForSelector('text=Give this to', { timeout: 15000 })

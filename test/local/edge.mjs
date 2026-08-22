@@ -342,13 +342,27 @@ async function main() {
 
   // -- deputy edges ---------------------------------------------------------
   console.log('\n- deputy edge cases -')
-  const trickyLabel = 'Ana "O\'Brien" — 教員 \u{1F642} ' + 'y'.repeat(200)
+  // Names on the real roster contain mixed case and spacing; the label is
+  // derived server-side from whichever student is chosen.
   const odd = await api('/api/grants', {
     method: 'POST',
-    body: { label: trickyLabel, hours: 2 },
+    body: { studentId: students[7].id, hours: 2 },
     cookie: admin,
   })
-  check('a label with quotes, unicode and emoji is accepted', odd.status === 201, JSON.stringify(odd.data))
+  check('a grant for a roster student is accepted', odd.status === 201, JSON.stringify(odd.data))
+  check(
+    'the label is derived from that student, not from the client',
+    odd.data.grant.label === `${students[7].name.trim()} (${students[7].roll_no})`,
+    odd.data.grant.label
+  )
+  for (const bad of [{ label: 'Someone Made Up' }, { studentId: 'not-a-uuid' }, {}]) {
+    const r = await api('/api/grants', { method: 'POST', body: { ...bad, hours: 2 }, cookie: admin })
+    check(
+      `a grant from ${JSON.stringify(bad)} is refused`,
+      r.status >= 400 && r.status < 500,
+      `${r.status}`
+    )
+  }
   const storedLabel = (await one('admin_grants', `select=label&id=eq.${odd.data.grant.id}`)).label
   check('the label is capped at 80 chars', storedLabel.length <= 80, `${storedLabel.length}`)
 
@@ -372,7 +386,7 @@ async function main() {
 
   const ghostGrant = await api('/api/grants', {
     method: 'POST',
-    body: { label: 'Ghost', hours: 2 },
+    body: { studentId: students[8].id, hours: 2 },
     cookie: admin,
   })
   const ghostLogin = await api('/api/admin/login', {

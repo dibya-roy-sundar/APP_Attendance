@@ -22,6 +22,8 @@ type Session = {
 }
 
 type Props = {
+  /** The roster, so temporary access can only be granted to someone on it. */
+  students: { studentId: string; rollNo: string; name: string }[]
   sessions: { id: string; classDate: string; isOpen: boolean }[]
   enrollmentOpen: boolean
   session: Session | null
@@ -51,6 +53,7 @@ function formatDate(d: string) {
  * grid is the default view and the QR is the thing you open, not the reverse.
  */
 export function Controls({
+  students,
   sessions,
   enrollmentOpen,
   session,
@@ -210,7 +213,7 @@ export function Controls({
 
       {panel === 'access' && (
         <Panel>
-          <AccessPanel />
+          <AccessPanel students={students} />
         </Panel>
       )}
 

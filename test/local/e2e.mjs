@@ -189,8 +189,9 @@ async function main() {
   const w = nowWindow()
   check('token matches the HMAC of the current window', tokenRes.data.token === tokenFor(secret, session.id, w))
 
-  const firstThree = await select('students', 'select=roll_no&order=s_no.asc&limit=3')
-  const [rollA, rollB, rollC] = firstThree.map((r) => r.roll_no)
+  // Full roster: grants are issued by student id now, not a free-text label.
+  const students = await select('students', 'select=id,roll_no,name&order=s_no.asc')
+  const [rollA, rollB, rollC] = students.slice(0, 3).map((r) => r.roll_no)
 
   // ── enrollment window ─────────────────────────────────────────────────────
   console.log('\n— enrollment while the window is closed —')
@@ -745,12 +746,22 @@ async function main() {
   // ── temporary access ──────────────────────────────────────────────────────
   console.log('\n— temporary admin access —')
 
-  const noLabel = await api('/api/grants', { method: 'POST', body: { hours: 4 }, cookie: admin })
-  check('a grant without a name is refused', noLabel.data?.error === 'MISSING_LABEL')
+  const noStudent = await api('/api/grants', { method: 'POST', body: { hours: 4 }, cookie: admin })
+  check('a grant without a student is refused', noStudent.data?.error === 'MISSING_STUDENT')
+  const ghostStudent = await api('/api/grants', {
+    method: 'POST',
+    body: { studentId: uuid(), hours: 4 },
+    cookie: admin,
+  })
+  check(
+    'a grant for someone not on the roster is refused',
+    ghostStudent.data?.error === 'UNKNOWN_STUDENT',
+    JSON.stringify(ghostStudent.data)
+  )
   for (const hours of [0, 0.5, 24 * 8, 'four']) {
     const r = await api('/api/grants', {
       method: 'POST',
-      body: { label: 'x', hours },
+      body: { studentId: students[0].id, hours },
       cookie: admin,
     })
     check(`hours=${hours} is refused`, r.data?.error === 'BAD_HOURS', JSON.stringify(r.data))
@@ -758,7 +769,7 @@ async function main() {
 
   const issuedRes = await api('/api/grants', {
     method: 'POST',
-    body: { label: 'Anita (TA)', hours: 4 },
+    body: { studentId: students[4].id, hours: 4 },
     cookie: admin,
   })
   check('issuing temporary access succeeds', issuedRes.status === 201, JSON.stringify(issuedRes.data))
@@ -783,7 +794,12 @@ async function main() {
   // Sign in as the deputy.
   const deputyLogin = await api('/api/admin/login', { method: 'POST', body: { password: code } })
   check('the code signs in', deputyLogin.status === 200 && deputyLogin.data.role === 'deputy')
-  check('the deputy is named back', deputyLogin.data.label === 'Anita (TA)')
+  const expectedLabel = `${students[4].name.trim()} (${students[4].roll_no})`
+  check(
+    'the deputy is named back, derived from the roster',
+    deputyLogin.data.label === expectedLabel,
+    `${deputyLogin.data.label} vs ${expectedLabel}`
+  )
   const deputy = (deputyLogin.res.headers.getSetCookie?.() ?? [])
     .map((c) => c.split(';')[0])
     .join('; ')
@@ -846,7 +862,8 @@ async function main() {
 
   check(
     'the log attributes the deputy by name',
-    (await select('audit_log', `select=actor&actor=eq.deputy:Anita (TA)`)).length >= 3
+    (await select('audit_log', `select=actor&actor=eq.deputy:${encodeURIComponent(expectedLabel)}`))
+      .length >= 3
   )
 
   // What a deputy MAY NOT do: anything touching identity.
@@ -880,11 +897,16 @@ async function main() {
   const dShared = await dZip.file('xl/sharedStrings.xml').async('string')
   check('the sheet is protected', dSheet.includes('<sheetProtection'))
   check('formulas still recalculate', dSheet.includes('COUNTIF(F2:U2'))
-  check('a second sheet names the recipient', dShared.includes('Anita (TA)'))
-  check('metadata carries the provenance', dCore.includes('Anita (TA)'))
+  check('a second sheet names the recipient', dShared.includes(students[4].name.trim()))
+  check('metadata carries the provenance', dCore.includes(students[4].name.trim()))
   check(
     'deputy exports are logged against them',
-    (await select('audit_log', `select=actor&action=eq.EXPORT&actor=eq.deputy:Anita (TA)`)).length >= 1
+    (
+      await select(
+        'audit_log',
+        `select=actor&action=eq.EXPORT&actor=eq.deputy:${encodeURIComponent(expectedLabel)}`
+      )
+    ).length >= 1
   )
 
   // Revocation is immediate.
@@ -913,7 +935,7 @@ async function main() {
   // An expired grant is refused at the door.
   const expiring = await api('/api/grants', {
     method: 'POST',
-    body: { label: 'Yesterday', hours: 1 },
+    body: { studentId: students[6].id, hours: 1 },
     cookie: admin,
   })
   await patch('admin_grants', `id=eq.${expiring.data.grant.id}`, {
@@ -942,14 +964,14 @@ async function main() {
     ['/', 'Soft Skills Attendance'],
     ['/me', 'Soft Skills Attendance'],
     [`/m?s=${session.id}&t=${t}`, 'Soft Skills Attendance'],
-    ['/admin', 'Instructor sign-in'],
+    ['/admin', 'Admin sign-in'],
   ]) {
     const res = await fetch(BASE + path)
     const html = await res.text()
     check(`GET ${path} renders`, res.status === 200 && html.includes(expect), `status ${res.status}`)
   }
   const adminHtml = await (await fetch(`${BASE}/admin`, { headers: { cookie: admin } })).text()
-  check('/admin with the cookie renders the grid, not the login', !adminHtml.includes('Instructor sign-in'))
+  check('/admin with the cookie renders the grid, not the login', !adminHtml.includes('Admin sign-in'))
 
   const forgedCookie = await api('/api/roster', { cookie: 'att_admin=9999999999.forged' })
   check('a forged admin cookie is rejected', forgedCookie.status === 401)

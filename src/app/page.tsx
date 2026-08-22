@@ -21,7 +21,7 @@ export default function Home() {
           href="/admin"
           className="rounded-xl border border-slate-300 px-4 py-3 text-center font-medium dark:border-slate-700"
         >
-          Instructor
+          Admin
         </Link>
       </div>
       <ThemeToggle />

@@ -58,6 +58,7 @@ export type AuditAction =
   | 'GRANT_ISSUED'
   | 'GRANT_REVOKED'
   | 'EXPORT'
+  | 'CLAIM_DEVICE'
 
 export type AuditLogRow = {
   id: number

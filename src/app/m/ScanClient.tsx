@@ -22,7 +22,7 @@ const MESSAGES: Record<string, string> = {
   UNKNOWN_ROLL: 'No student with that roll number. Check it and try again.',
   ALREADY_CLAIMED: 'That roll number is already registered on another phone.',
   DEVICE_ALREADY_BOUND: 'This phone is already registered to a different student.',
-  ENROLLMENT_CLOSED: 'Registration is closed. Ask the instructor to open it.',
+  ENROLLMENT_CLOSED: 'Registration is closed. Ask the admin to open it.',
 }
 
 function formatDate(d: string) {
@@ -176,7 +176,7 @@ export function ScanClient({ sessionId, token }: { sessionId: string; token: str
         <Card tone="warn">
           <h1 className="text-xl font-semibold">Not registered</h1>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-            Ask the instructor to open the registration window, then scan again.
+            Ask the admin to open the registration window, then scan again.
           </p>
         </Card>
       )}

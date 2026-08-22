@@ -29,9 +29,12 @@ function until(iso: string) {
  * a device, change the registration window, or pass access on. Revoking takes
  * effect on their next request.
  */
-export function AccessPanel() {
+type Pick = { studentId: string; rollNo: string; name: string }
+
+export function AccessPanel({ students }: { students: Pick[] }) {
   const [grants, setGrants] = useState<Grant[] | null>(null)
-  const [label, setLabel] = useState('')
+  const [query, setQuery] = useState('')
+  const [chosen, setChosen] = useState<Pick | null>(null)
   const [hours, setHours] = useState<number>(8)
   const [issued, setIssued] = useState<{ code: string; label: string } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -58,20 +61,20 @@ export function AccessPanel() {
   }, [reloadKey])
 
   async function issue() {
-    if (!label.trim()) return
+    if (!chosen) return
     setBusy(true)
     setError(null)
     try {
       const res = await fetch('/api/grants', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: label.trim(), hours }),
+        body: JSON.stringify({ studentId: chosen.studentId, hours }),
       })
       const data = await res.json()
       if (!res.ok) {
         setError(
-          data.error === 'MISSING_LABEL'
-            ? 'Give the code a name so you know who has it.'
+          data.error === 'MISSING_STUDENT' || data.error === 'UNKNOWN_STUDENT'
+            ? 'Pick someone from the roster first.'
             : data.error === 'BAD_HOURS'
               ? 'Choose between 1 hour and 7 days.'
               : 'Could not issue access.'
@@ -79,7 +82,8 @@ export function AccessPanel() {
         return
       }
       setIssued({ code: data.code, label: data.grant.label })
-      setLabel('')
+      setChosen(null)
+      setQuery('')
       reload()
     } catch {
       setError('No connection.')
@@ -103,6 +107,16 @@ export function AccessPanel() {
   }
 
   const active = grants?.filter((g) => g.active) ?? []
+  const q = query.trim().toLowerCase()
+  const matches =
+    q.length === 0
+      ? []
+      : students
+          .filter(
+            (s) =>
+              s.name.toLowerCase().includes(q) || s.rollNo.toLowerCase().includes(q)
+          )
+          .slice(0, 8)
 
   return (
     <div className="flex flex-col gap-4">
@@ -154,42 +168,79 @@ export function AccessPanel() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="min-w-40 flex-1 text-xs text-slate-500 dark:text-slate-400">
+      <div className="flex flex-col gap-2">
+        <label className="text-xs text-slate-500 dark:text-slate-400">
           Who is covering
           <input
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder="e.g. Anita (TA)"
+            value={chosen ? `${chosen.name} (${chosen.rollNo})` : query}
+            onChange={(e) => {
+              setChosen(null)
+              setQuery(e.target.value)
+            }}
+            placeholder="Search the roster by name or roll number"
+            autoCapitalize="none"
+            spellCheck={false}
             className="mt-1 block w-full rounded-lg border border-slate-300 bg-transparent px-2.5 py-1.5 text-base dark:border-slate-700"
           />
         </label>
-        <div className="text-xs text-slate-500 dark:text-slate-400">
-          For
-          <div className="mt-1 flex gap-1">
-            {HOURS.map((h) => (
-              <button
-                key={h}
-                onClick={() => setHours(h)}
-                aria-pressed={hours === h}
-                className={`rounded-lg px-2.5 py-1.5 text-sm tabular-nums ${
-                  hours === h
-                    ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
-                    : 'border border-slate-300 dark:border-slate-700'
-                }`}
-              >
-                {h}h
-              </button>
-            ))}
+
+        {/* Only people already on the roster can be given access. */}
+        {!chosen && query.trim().length > 0 && (
+          <ul className="max-h-48 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
+            {matches.length === 0 ? (
+              <li className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
+                Nobody on the roster matches that.
+              </li>
+            ) : (
+              matches.map((m) => (
+                <li key={m.studentId}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setChosen(m)
+                      setQuery('')
+                    }}
+                    className="flex w-full items-center gap-3 px-3 text-left text-sm enabled:active:bg-slate-100 dark:enabled:active:bg-slate-800"
+                  >
+                    <span className="shrink-0 font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                      {m.rollNo}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{m.name}</span>
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        )}
+
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="text-xs text-slate-500 dark:text-slate-400">
+            For
+            <div className="mt-1 flex gap-1">
+              {HOURS.map((h) => (
+                <button
+                  key={h}
+                  onClick={() => setHours(h)}
+                  aria-pressed={hours === h}
+                  className={`rounded-lg px-2.5 text-sm tabular-nums ${
+                    hours === h
+                      ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
+                      : 'border border-slate-300 dark:border-slate-700'
+                  }`}
+                >
+                  {h}h
+                </button>
+              ))}
+            </div>
           </div>
+          <button
+            onClick={issue}
+            disabled={busy || !chosen}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-40 dark:border-slate-700"
+          >
+            Issue code
+          </button>
         </div>
-        <button
-          onClick={issue}
-          disabled={busy || !label.trim()}
-          className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-40 dark:border-slate-700"
-        >
-          Issue code
-        </button>
       </div>
 
       {error && (
