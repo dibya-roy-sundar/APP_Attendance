@@ -101,19 +101,41 @@ way as anyone else's — by scanning with their phone, or by tapping their row.
 
 ### The roster grid
 
-All 47 students, always visible, in sheet order.
+Two sections, because they are used differently.
 
 ```
 ✓  scanned      ✎  marked by hand      ·  absent
 ```
 
-**Tapping a row toggles that student.** No modal, no confirm — undo is tapping
-again. After a tap, an optional chip row offers *phone dead* / *late* /
-*correction*; it annotates the audit entry the tap already wrote and never moves
-the row. Skipping it is fine, because the log records who and when regardless.
+**Marked** holds anyone already present. Scans land here on their own within five
+seconds. These rows are **not tappable**: the one mistake that really costs
+something is absenting a student who did turn up, and a stray thumb should not be
+able to do it. Unmarking lives in that row's `⋯` menu, where it takes a
+deliberate second tap.
 
-The date picker loads any past session into the same grid with identical tap
-behaviour, so a correction found a week later needs no new interaction to learn.
+**Not marked** holds everyone else, with a search box for when typing three
+letters beats scrolling 47 rows. Tapping a row **stages** it — no request, no
+waiting. A bar appears at the bottom showing how many are staged, with **Save**
+and **Discard**; it is absent when nothing is staged.
+
+Save writes the whole batch in one request. That is not only about speed:
+
+- **It is idempotent.** `/api/marks` only inserts, so saving twice — or three
+  saves racing — leaves exactly one row. The per-tap toggle it replaced read the
+  current state before flipping it, so two taps landing together both saw
+  "absent", both inserted, and the student ended up *marked* when two taps should
+  have cancelled out. That was the miscounting.
+- **A scan is never overwritten.** If somebody scans while staged they move to
+  Marked as `✓` and drop out of the batch, because scanning is the better
+  evidence. The save says so: *"Saved 5. 1 had already scanned."*
+- **Ten taps cost one round trip.** Ten rows take about 380 ms, against the
+  twelve seconds ten sequential writes used to take at ~1.5 s each.
+
+An optional reason accompanies the save rather than each tap, which is both
+simpler and a more honest description of what it refers to.
+
+The date picker loads any past session into the same two-section view, so a
+correction found a week later needs no new interaction to learn.
 
 ### Forgot to start a session
 
