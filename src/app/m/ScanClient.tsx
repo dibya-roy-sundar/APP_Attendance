@@ -182,11 +182,19 @@ export function ScanClient({
         attestation = await startRegistration({
           optionsJSON: opts.data.options,
         });
-      } catch {
+      } catch (err) {
+        // InvalidStateError means this phone already holds a passkey for that
+        // student: the server sent it in excludeCredentials and the
+        // authenticator refused to make a second one. That is the right
+        // outcome, and telling them "it did not finish" would send them round
+        // the same loop.
+        const already =
+          err instanceof Error && err.name === "InvalidStateError";
         setResult({
           kind: "register",
-          prompt:
-            "Your phone did not finish creating the passkey. Tap to try again.",
+          prompt: already
+            ? "This phone is already set up for that roll number. Tap “Already set up — try again”."
+            : "Your phone did not finish creating the passkey. Tap to try again.",
         });
         return;
       }

@@ -127,6 +127,22 @@ async function main() {
   // can now do, deliberately, is hold a second passkey for a second student —
   // a shared family phone, or the admin's own phone.
   console.log('\n- one phone, more than one passkey -')
+  // Same phone, same student, twice: refused by the authenticator itself, not
+  // by us. The server puts that student's existing credentials in
+  // excludeCredentials, and a platform authenticator throws InvalidStateError
+  // rather than making a second one. Verified against a real virtual
+  // authenticator, so the software one here honours it too.
+  const dupe = await phoneOne.register(session.id, tok(), rollOf(0))
+  check(
+    'the same phone cannot register the same student twice',
+    dupe.data?.error === 'InvalidStateError',
+    JSON.stringify(dupe.data)
+  )
+  check(
+    'and no duplicate credential was written',
+    (await count('student_credentials', `student_id=eq.${students[0].id}`)) === 1
+  )
+
   const secondStudent = await phoneOne.register(session.id, tok(), rollOf(2))
   check(
     'one phone may register a second student',

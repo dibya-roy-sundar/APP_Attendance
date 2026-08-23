@@ -110,9 +110,24 @@ export function createAuthenticator() {
       credentials.clear()
     },
 
-    /** navigator.credentials.create(), as a phone would answer it. */
+    /**
+     * navigator.credentials.create(), as a phone would answer it.
+     *
+     * Honours `excludeCredentials`, because a real platform authenticator does:
+     * asked to create a second credential for a user it already holds one for,
+     * it throws InvalidStateError. Ignoring that here made the suite report
+     * duplicate registrations succeeding when on a real phone they cannot.
+     */
     register(options, origin) {
       const rpId = options.rp.id
+      const excluded = (options.excludeCredentials ?? []).map((c) => c.id)
+      for (const id of excluded) {
+        if (credentials.has(id)) {
+          const err = new Error('credential already present on this authenticator')
+          err.name = 'InvalidStateError'
+          throw err
+        }
+      }
       const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
       const credentialId = Buffer.from(
         createHash('sha256').update(`${rpId}:${options.user.id}:${credentials.size}:${Date.now()}`).digest()

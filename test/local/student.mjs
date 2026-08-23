@@ -54,7 +54,14 @@ export function phone(base) {
         rollNo,
       })
       if (options.status !== 200) return { stage: 'options', ...options }
-      const attestation = authenticator.register(options.data.options, options.data.origin)
+      let attestation
+      try {
+        attestation = authenticator.register(options.data.options, options.data.origin)
+      } catch (err) {
+        // A real authenticator refuses a second credential for a user it
+        // already holds one for; the suites assert that rather than a 4xx.
+        return { stage: 'authenticator', status: 0, data: { error: err.name } }
+      }
       const verified = await post('/api/passkey/register/verify', {
         s: sessionId,
         t: token,
