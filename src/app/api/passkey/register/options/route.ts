@@ -1,6 +1,7 @@
 import { fail, ok, readJson } from '@/lib/api'
 import { MAX_ROLL_LENGTH, getSessionById, getStudentByRollNo } from '@/lib/data'
-import { RP_NAME, credentialsForStudent, expectedOrigin, pruneChallenges, rpID, storeChallenge } from '@/lib/passkey'
+import { RP_NAME, credentialsForStudent, expectedOrigin, rpID, storeChallenge } from '@/lib/passkey'
+import { sweepChallenges } from '@/lib/sweep'
 import { verifyToken } from '@/lib/token'
 import { readStudentSession } from '@/lib/student-session'
 import { generateRegistrationOptions } from '@simplewebauthn/server'
@@ -50,9 +51,14 @@ export async function POST(req: Request) {
    *
    * The exception is proving you are already that student, by holding a session
    * this server issued for them — which only a verified passkey assertion can
-   * produce. That covers adding a second device while you still have the first.
-   * A genuinely lost phone needs the admin to remove the old passkey, which is
-   * rare: within one ecosystem a passkey follows you to a new phone by itself.
+   * produce. That covers moving to a new phone while you still have the old one.
+   *
+   * A genuinely lost phone cannot do that, and the server has no way to tell it
+   * apart from a stranger's phone: both are an unknown device asking for a roll
+   * number that is taken. So it does not try. The claim becomes a row in
+   * passkey_requests and the instructor decides, which is also what turns every
+   * refused claim into evidence. Rare either way — within one ecosystem a
+   * passkey follows you to a new phone by itself.
    */
   // Options are issued either way. A roll number that already has a passkey
   // still gets a challenge, because the claim has to be *verified* before it can
@@ -61,7 +67,6 @@ export async function POST(req: Request) {
   // it becomes a credential or a request is decided in register/verify.
   const replacing = existing.length > 0 && readStudentSession(req) !== student.id
 
-  await pruneChallenges()
   const options = await generateRegistrationOptions({
     rpName: RP_NAME,
     rpID: rpID(req),
@@ -85,6 +90,7 @@ export async function POST(req: Request) {
     },
   })
 
+  sweepChallenges()
   await storeChallenge(options.challenge, 'register', student.id)
   return ok({
     options,

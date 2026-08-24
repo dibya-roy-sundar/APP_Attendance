@@ -1,6 +1,7 @@
 import { fail, ok, readJson } from '@/lib/api'
 import { getSessionById } from '@/lib/data'
-import { expectedOrigin, pruneChallenges, rpID, storeChallenge } from '@/lib/passkey'
+import { expectedOrigin, rpID, storeChallenge } from '@/lib/passkey'
+import { sweepChallenges } from '@/lib/sweep'
 import { verifyToken } from '@/lib/token'
 import { generateAuthenticationOptions } from '@simplewebauthn/server'
 
@@ -26,13 +27,12 @@ export async function POST(req: Request) {
     return fail('BAD_TOKEN', 409)
   }
 
-  await pruneChallenges()
-
   const options = await generateAuthenticationOptions({
     rpID: rpID(req),
     allowCredentials: [],
     userVerification: 'required',
   })
+  sweepChallenges()
   await storeChallenge(options.challenge, 'authenticate', null)
   return ok({ options, origin: expectedOrigin(req) })
 }

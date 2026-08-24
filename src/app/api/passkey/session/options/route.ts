@@ -1,5 +1,6 @@
 import { ok } from '@/lib/api'
-import { expectedOrigin, pruneChallenges, rpID, storeChallenge } from '@/lib/passkey'
+import { expectedOrigin, rpID, storeChallenge } from '@/lib/passkey'
+import { sweepChallenges } from '@/lib/sweep'
 import { generateAuthenticationOptions } from '@simplewebauthn/server'
 
 /**
@@ -21,8 +22,6 @@ import { generateAuthenticationOptions } from '@simplewebauthn/server'
  * schema change whose only benefit would be tidiness.
  */
 export async function POST(req: Request) {
-  await pruneChallenges()
-
   const options = await generateAuthenticationOptions({
     rpID: rpID(req),
     // Discoverable: the passkey says who it belongs to, so this endpoint being
@@ -30,6 +29,7 @@ export async function POST(req: Request) {
     allowCredentials: [],
     userVerification: 'required',
   })
+  sweepChallenges()
   await storeChallenge(options.challenge, 'authenticate', null)
   return ok({ options, origin: expectedOrigin(req) })
 }

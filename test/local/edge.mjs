@@ -706,6 +706,59 @@ async function main() {
     )
   }
 
+  // ── challenge housekeeping ────────────────────────────────────────────────
+  //
+  // The sweep runs *after* the fresh challenge has been stored, so the ordering
+  // matters: a predicate that caught the new row would delete the challenge the
+  // student is about to sign with, and sign-in would fail intermittently in a
+  // way no unit test would show.
+  console.log('\n- lapsed challenges are swept behind the response -')
+  {
+    await remove('webauthn_challenges', 'challenge=not.is.null')
+    const past = new Date(Date.now() - 60_000).toISOString()
+    const future = new Date(Date.now() + 300_000).toISOString()
+    await insert('webauthn_challenges', {
+      challenge: 'edge-lapsed',
+      purpose: 'authenticate',
+      student_id: null,
+      expires_at: past,
+    })
+    await insert('webauthn_challenges', {
+      challenge: 'edge-live',
+      purpose: 'authenticate',
+      student_id: null,
+      expires_at: future,
+    })
+    check('two challenges seeded, one lapsed', (await count('webauthn_challenges')) === 2)
+
+    const opts = await api('/api/passkey/session/options', { method: 'POST', body: {} })
+    check('a challenge is issued', opts.status === 200 && typeof opts.data?.options?.challenge === 'string')
+    const minted = opts.data.options.challenge
+
+    let rows = []
+    for (let i = 0; i < 40; i++) {
+      rows = (await select('webauthn_challenges', 'select=challenge')).map((r) => r.challenge)
+      if (!rows.includes('edge-lapsed')) break
+      await sleep(100)
+    }
+    check('the lapsed one is deleted behind the response', !rows.includes('edge-lapsed'), rows.join(','))
+    check('the unexpired one is untouched', rows.includes('edge-live'), rows.join(','))
+    // The point of the test: the sweep must not eat what it just stored.
+    check('and the challenge just minted survives its own sweep', rows.includes(minted), rows.join(','))
+
+    // Still usable, which is what surviving actually has to mean.
+    const spent = await api('/api/passkey/session/verify', {
+      method: 'POST',
+      body: { response: { id: 'nope', rawId: 'nope', type: 'public-key', response: {} } },
+    })
+    check(
+      'and is a real challenge the verify step recognises, not an orphan',
+      spent.status !== 404,
+      `${spent.status} ${JSON.stringify(spent.data).slice(0, 80)}`
+    )
+    await remove('webauthn_challenges', 'challenge=not.is.null')
+  }
+
   console.log(`\n${'='.repeat(60)}`)
   console.log(`${pass} passed, ${fail} failed`)
   if (failures.length) {

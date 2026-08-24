@@ -298,16 +298,34 @@ A refused claim is evidence, so it stays in the list for the week. The permanent
 record is `audit_log`, which keeps every `PASSKEY_REQUESTED`, `PASSKEY_APPROVED`
 and `PASSKEY_REJECTED` for good.
 
-Rows past seven days are deleted. There is no scheduler: the seven-day window is
-enforced by the query, so the delete is housekeeping rather than correctness —
-a stale row is invisible whether or not it has been removed yet. It is therefore
-fired *after* the panel's response is sent, via `after()` from `next/server`,
-which adds nothing to the admin's page load. A bare un-awaited promise would not
-do: on Vercel the container can be frozen the moment the response is flushed,
-abandoning the delete halfway. Errors are dropped, because a cleanup that did not
-run has no visible consequence and must not break a working panel. If the panel
-is never opened, nothing is cleaned — accepted, for a table holding a handful of
-rows a term.
+Rows past seven days are deleted, and so are lapsed WebAuthn challenges. Both
+sweeps live in [`src/lib/sweep.ts`](src/lib/sweep.ts) and neither is a scheduler.
+
+The reasoning is the same for both: each table is already self-limiting *by
+query*, not by cleanup. A lapsed challenge cannot be consumed because
+consumption filters on `expires_at`; a stale request is invisible because the
+panel filters on `requested_at`. Deleting the rows is therefore tidying, and
+tidying has no business costing a student a round trip to Supabase while they
+wait for a fingerprint prompt.
+
+So both run *after* the response is sent, via `after()` from `next/server`. A
+bare un-awaited promise would not do — on Vercel the container can be frozen the
+moment the response is flushed, abandoning the delete halfway. Errors are
+dropped: a cleanup that did not run has no visible consequence, the next call
+attempts it again, and a failure here must never turn a working sign-in into a
+broken one.
+
+MEASUREMENT_PENDING
+
+One ordering hazard, worth knowing because it is invisible in a unit test: the
+sweep is registered *before* the fresh challenge is stored but runs *after* it.
+A predicate that caught the new row would delete the challenge the student is
+about to sign with, and sign-ins would fail intermittently. The edge suite
+asserts the minted challenge survives its own sweep and is still recognised by
+the verify step.
+
+If nothing is ever called, nothing is cleaned — accepted, for tables holding a
+handful of rows a term.
 
 A deputy can **see** the panel but not decide anything: both `decide` and
 `remove` return `403`. Somebody covering one class needs to know a student is
