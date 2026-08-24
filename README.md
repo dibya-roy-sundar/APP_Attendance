@@ -1156,12 +1156,21 @@ per-relying-party, so it cannot correlate anybody across sites. This app now
 publishes all of them to any caller holding a live QR token, which is what makes
 one-passkey-per-keychain enforceable at all.
 
-One live weakness in the same response, worth fixing rather than defending:
-`register/options` returns `needsApproval`, which tells the caller whether the
-roll number they typed has already enrolled. That is an enumeration oracle, and
-given the [residual gap](#what-is-still-open) it points straight at the roll
-numbers that are still claimable. It exists only so the screen can warn before
-the biometric prompt rather than after.
+`register/options` used to leak one thing it should not have: a `needsApproval`
+field saying whether the roll number just typed had already enrolled. Any caller
+with a live QR token could ask about any roll number, and since a device with an
+empty keychain can still claim an *unenrolled* one, the answer named the
+claimable ones.
+
+It was added so the screen could warn before the biometric prompt rather than
+after. Nothing ever read it — no client, no test. So it cost a database round
+trip and gave away enrolment state in exchange for a warning that was never
+shown, and it is gone, along with the query and the cookie read that fed it.
+
+The reply is now identical whichever roll number is asked about, and the edge
+suite asserts that rather than trusting it: same field names, and the same
+exclusion list, since that list is the whole class either way and so its length
+cannot be read as "has this student enrolled".
 
 ### Cookies and HTTPS
 

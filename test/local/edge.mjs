@@ -839,6 +839,57 @@ async function main() {
     check('two credentials, two students, two devices', (await count('student_credentials')) === 2)
   }
 
+  // ── the options step reveals nothing ──────────────────────────────────────
+  //
+  // A caller with a live QR token may type any roll number. The reply must not
+  // say whether that roll number has enrolled, because an empty keychain can
+  // still claim one that has not — so the answer would name the claimable ones.
+  console.log('\n- register/options gives away no enrolment state -')
+  {
+    await remove('student_credentials', 'id=not.is.null')
+    await remove('passkey_requests', 'id=not.is.null')
+
+    const enrolled = students[0]
+    const notEnrolled = students[1]
+    const first = await phone(BASE).register(session.id, tok(), enrolled.roll_no)
+    check('one student is enrolled to compare against', first.status === 200)
+
+    const ask = (rollNo) =>
+      api('/api/passkey/register/options', {
+        method: 'POST',
+        body: { s: session.id, t: tok(), rollNo },
+      })
+
+    const taken = await ask(enrolled.roll_no)
+    const free = await ask(notEnrolled.roll_no)
+    check('both roll numbers get options', taken.status === 200 && free.status === 200)
+
+    const keys = (r) => Object.keys(r.data).sort().join(',')
+    check(
+      'the two replies have the same shape',
+      keys(taken) === keys(free),
+      `${keys(taken)} vs ${keys(free)}`
+    )
+    check(
+      'and no field claims to know whether it is taken',
+      !('needsApproval' in taken.data) && !('replacing' in taken.data),
+      keys(taken)
+    )
+    // The exclusion list is the whole class either way, so its length cannot be
+    // read as "does this student have a passkey".
+    check(
+      'the exclusion list is identical for both',
+      JSON.stringify(taken.data.options.excludeCredentials) ===
+        JSON.stringify(free.data.options.excludeCredentials),
+      `${taken.data.options.excludeCredentials?.length} vs ${free.data.options.excludeCredentials?.length}`
+    )
+    check(
+      'and it carries the whole class, not the student asked about',
+      taken.data.options.excludeCredentials.length === 1
+    )
+    await remove('student_credentials', 'id=not.is.null')
+  }
+
   console.log(`\n${'='.repeat(60)}`)
   console.log(`${pass} passed, ${fail} failed`)
   if (failures.length) {

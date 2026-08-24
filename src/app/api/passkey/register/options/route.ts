@@ -1,16 +1,8 @@
 import { fail, ok, readJson } from '@/lib/api'
 import { MAX_ROLL_LENGTH, getSessionById, getStudentByRollNo } from '@/lib/data'
-import {
-  RP_NAME,
-  allCredentials,
-  credentialsForStudent,
-  expectedOrigin,
-  rpID,
-  storeChallenge,
-} from '@/lib/passkey'
+import { RP_NAME, allCredentials, expectedOrigin, rpID, storeChallenge } from '@/lib/passkey'
 import { sweepChallenges } from '@/lib/sweep'
 import { verifyToken } from '@/lib/token'
-import { readStudentSession } from '@/lib/student-session'
 import { generateRegistrationOptions } from '@simplewebauthn/server'
 
 /**
@@ -41,7 +33,6 @@ export async function POST(req: Request) {
   const student = await getStudentByRollNo(rollNo)
   if (!student) return fail('UNKNOWN_ROLL', 404)
 
-  const existing = await credentialsForStudent(student.id)
   // Every credential in the class, not only this student's. See allCredentials()
   // for why the exclusion list is the only place "one passkey per phone" can be
   // enforced, and for the limits of enforcing it there.
@@ -71,12 +62,17 @@ export async function POST(req: Request) {
    * refused claim into evidence. Rare either way — within one ecosystem a
    * passkey follows you to a new phone by itself.
    */
-  // Options are issued either way. A roll number that already has a passkey
-  // still gets a challenge, because the claim has to be *verified* before it can
-  // be judged — an unverified request would be worthless as evidence, and would
-  // let anyone queue a claim for anyone without holding a phone at all. Whether
-  // it becomes a credential or a request is decided in register/verify.
-  const replacing = existing.length > 0 && readStudentSession(req) !== student.id
+  // Options are issued either way, and this response says nothing about whether
+  // the roll number is already taken. A claim has to be *verified* before it can
+  // be judged, so whether it becomes a credential or a request is decided in
+  // register/verify, and nothing here reveals which it will be.
+  //
+  // This used to return `needsApproval`, so the screen could warn before the
+  // biometric prompt rather than after. Nothing ever read it. What it did do was
+  // answer "has this roll number enrolled yet?" for any caller holding a live QR
+  // token — and since an empty keychain can still claim an unenrolled roll
+  // number, that named the claimable ones. A round trip and an oracle, for a
+  // warning that was never shown.
 
   const options = await generateRegistrationOptions({
     rpName: RP_NAME,
@@ -117,8 +113,6 @@ export async function POST(req: Request) {
     origin: expectedOrigin(req),
     name: student.name,
     rollNo: student.roll_no,
-    // Lets the screen warn before the biometric prompt, rather than after.
-    needsApproval: replacing,
   })
 }
 
