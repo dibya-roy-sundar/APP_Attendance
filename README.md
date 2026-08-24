@@ -315,7 +315,27 @@ dropped: a cleanup that did not run has no visible consequence, the next call
 attempts it again, and a failure here must never turn a working sign-in into a
 broken one.
 
-MEASUREMENT_PENDING
+Measured on production, `POST /api/passkey/session/options` — the challenge every
+sign-in starts with. Both deployments hit alternately from the same machine, both
+warmed first, with 40 lapsed rows seeded so the DELETE had real work to do:
+
+| | median | p90 | max |
+|---|---|---|---|
+| prune awaited in the request | 170 ms | 188 ms | 471 ms |
+| prune behind the response | **153 ms** | **173 ms** | **176 ms** |
+
+Roughly one Supabase round trip off the median — a modest 17 ms, and worth
+stating plainly because a first pass at this measurement suggested far more. That
+run compared a fresh deployment against a number taken minutes earlier and
+reported 364 ms median against 2213 ms max; almost all of that spread was cold
+starts, not the prune. Warm and interleaved is the only comparison that means
+anything here.
+
+The tail is the better argument: 471 ms down to 176 ms. The awaited version's
+worst case is a student waiting on a DELETE that has nothing to do with them,
+and a lecture hall is where that gets noticed.
+
+One ordering hazard
 
 One ordering hazard, worth knowing because it is invisible in a unit test: the
 sweep is registered *before* the fresh challenge is stored but runs *after* it.
