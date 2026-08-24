@@ -16,6 +16,13 @@ import { phone } from './student.mjs'
 // localhost, not 127.0.0.1: WebAuthn will not accept an IP address as a
 // Relying Party ID, so a passkey cannot be created on 127.0.0.1 at all.
 const BASE = process.env.BASE_URL ?? 'http://localhost:3100'
+// Cookies must be set for the host actually under test. This was hardcoded to
+// 'localhost', so a run against production set both cookies on a domain the
+// browser never sent them to: /admin rendered the login screen, every admin
+// control was missing, and the guards below skipped all seven admin screens
+// without a word. 227 checks passed against the wrong pages, and only the
+// check-count floor at the end caught it.
+const COOKIE_DOMAIN = new URL(BASE).hostname
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 const SHOTS = process.argv.includes('--shots')
 /** Which theme to audit: `--theme light` or `--theme dark` (default). */
@@ -363,6 +370,47 @@ async function main() {
 
   const origin = new URL(BASE).origin
 
+  /**
+   * Waits for a control that must be there, and records a failure if it is not.
+   *
+   * Every admin screen below used to be behind a bare `isVisible()`, which polls
+   * once and returns false if React has not rendered yet. A missing control
+   * therefore skipped its screen in silence — indistinguishable, in the output,
+   * from a screen that passed. Waiting turns a slow host into a pass, and a
+   * genuinely absent control into a failure, which is what it is.
+   */
+  async function mustSee(locator, what, timeout = 15000) {
+    try {
+      await locator.waitFor({ state: 'visible', timeout })
+      return true
+    } catch {
+      check(`${what}: the control that opens it is on screen`, false, 'never appeared')
+      return false
+    }
+  }
+
+  /**
+   * Leaves the More panel open, whatever state it is in now.
+   *
+   * `More` is a toggle and the panels are exclusive, so the blind
+   * click-to-open / click-to-close pairs this file used to do drifted out of
+   * step: opening the add-student form switched the panel, the closing click
+   * re-opened More, and the next section's opening click shut it again. Manage
+   * was therefore never on screen, and the temporary-access screens were skipped
+   * on every device and both themes — silently, because the guard was a bare
+   * isVisible(). Asserting the state instead of counting clicks fixes the class
+   * of bug, not just this instance.
+   */
+  async function ensureMoreOpen(page) {
+    const marker = page.getByText('Temporary access').first()
+    if (await marker.isVisible().catch(() => false)) return true
+    const more = page.getByRole('button', { name: 'More', exact: true }).first()
+    if (!(await mustSee(more, 'more'))) return false
+    await more.click()
+    await page.waitForTimeout(350)
+    return true
+  }
+
   console.log(`\ntheme under test: ${THEME}`)
   for (const phone of PHONES) {
     const browserType = phone.engine === 'webkit' ? webkit : chromium
@@ -384,7 +432,7 @@ async function main() {
       {
         name: 'att_admin',
         value: adminCookie.replace('att_admin=', ''),
-        domain: 'localhost',
+        domain: COOKIE_DOMAIN,
         path: '/',
       },
     ])
@@ -396,7 +444,7 @@ async function main() {
         {
           name: 'att_student',
           value: studentCookie.replace('att_student=', ''),
-          domain: 'localhost',
+          domain: COOKIE_DOMAIN,
           path: '/',
         },
       ])
@@ -452,7 +500,7 @@ async function main() {
       ['more', 'More'],
     ]) {
       const btn = page.getByRole('button', { name: button, exact: false }).first()
-      if (await btn.isVisible().catch(() => false)) {
+      if (await mustSee(btn, label)) {
         await btn.click()
         await page.waitForTimeout(250)
         await auditPage(page, label, phone)
@@ -462,53 +510,43 @@ async function main() {
     }
 
     // The add-student form.
-    const more0 = page.getByRole('button', { name: 'More', exact: true }).first()
-    if (await more0.isVisible().catch(() => false)) {
-      await more0.click()
-      await page.waitForTimeout(250)
+    if (await ensureMoreOpen(page)) {
       const addBtn = page.getByRole('button', { name: 'Add student' }).first()
-      if (await addBtn.isVisible().catch(() => false)) {
+      if (await mustSee(addBtn, 'add-student')) {
         await addBtn.click()
         await page.waitForTimeout(300)
         await auditPage(page, 'add-student', phone)
-        await page.getByRole('button', { name: 'More', exact: true }).first().click()
-        await page.waitForTimeout(200)
       }
     }
 
     // Temporary access, which holds the roster picker.
-    const more = page.getByRole('button', { name: 'More', exact: true }).first()
-    if (await more.isVisible().catch(() => false)) {
-      await more.click()
-      await page.waitForTimeout(250)
+    if (await ensureMoreOpen(page)) {
       const manage = page.getByRole('button', { name: 'Manage' }).first()
-      if (await manage.isVisible().catch(() => false)) {
+      if (await mustSee(manage, 'access')) {
         await manage.click()
         await page.waitForTimeout(300)
         await auditPage(page, 'access', phone)
         // With search results open, which is the tallest state.
         const search = page.getByPlaceholder(/Search the roster/)
-        if (await search.isVisible().catch(() => false)) {
+        if (await mustSee(search, 'access-results')) {
           await search.fill('a')
           await page.waitForTimeout(300)
           await auditPage(page, 'access-results', phone)
           await search.fill('')
         }
-        await page.getByRole('button', { name: 'More', exact: true }).first().click()
-        await page.waitForTimeout(200)
       }
     }
 
     // The confirm dialog, which only appears for a scanned student.
     const scannedMenu = page.locator('button[aria-label^="More actions"]').first()
-    if (await scannedMenu.isVisible().catch(() => false)) {
+    if (await mustSee(scannedMenu, 'confirm-dialog (row menu)')) {
       await scannedMenu.click()
       await page.waitForTimeout(250)
       const unmark = page.locator('button', { hasText: /^Unmark$/ }).first()
-      if (await unmark.isVisible().catch(() => false)) {
+      if (await mustSee(unmark, 'confirm-dialog (Unmark)')) {
         await unmark.click()
         await page.waitForTimeout(400)
-        if (await page.locator('[role=dialog]').isVisible().catch(() => false)) {
+        if (await mustSee(page.locator('[role=dialog]'), 'confirm-dialog')) {
           await auditPage(page, 'confirm-dialog', phone)
           await page.locator('button', { hasText: /^Keep it$/ }).click()
           await page.waitForTimeout(250)
@@ -518,7 +556,7 @@ async function main() {
 
     // Staged selection, which puts the save bar on screen.
     const selectAll = page.locator('button', { hasText: /^Select all/ }).first()
-    if (await selectAll.isVisible().catch(() => false)) {
+    if (await mustSee(selectAll, 'staged-save-bar')) {
       await selectAll.click()
       await page.waitForTimeout(300)
       await auditPage(page, 'staged-save-bar', phone)
@@ -529,11 +567,11 @@ async function main() {
 
     // The fullscreen QR must fit without cropping.
     const qr = page.getByRole('button', { name: 'Show QR' }).first()
-    if (await qr.isVisible().catch(() => false)) {
+    if (await mustSee(qr, 'qr')) {
       await qr.click()
       await page.waitForTimeout(1200)
       const img = page.locator('img[alt="Attendance QR code"]')
-      if (await img.isVisible().catch(() => false)) {
+      if (await mustSee(img, 'qr (the code itself)')) {
         const box = await img.boundingBox()
         const vp = page.viewportSize()
         check(
@@ -638,7 +676,14 @@ async function main() {
   // red: fewer screens reached means fewer checks run, and "0 failed" over half
   // the matrix reads exactly like a pass. Assert the floor so a broken build is
   // a failure rather than a quiet omission.
-  const FLOOR = 430
+  //
+  // It has now earned its keep twice. It caught a build serving 500ing chunks,
+  // and it caught this file setting its cookies on `domain: 'localhost'` while
+  // pointed at production — 227 checks passed against the login page, seven
+  // admin screens skipped in silence. The guards those screens sat behind are
+  // now mustSee(), so a missing control fails instead of vanishing; the floor
+  // stays as the backstop for whatever the next silent skip turns out to be.
+  const FLOOR = 500
   let short = false
   if (pass + fail < FLOOR) {
     short = true

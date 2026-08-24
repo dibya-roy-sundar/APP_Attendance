@@ -261,9 +261,14 @@ async function main() {
     queued.data?.requests?.[0]?.rollNo === rollA,
     JSON.stringify(queued.data).slice(0, 120)
   )
+  // Just the facts: who, from what, when, and what was decided. The panel
+  // deliberately offers no guess at whether a claim is honest — see the note in
+  // recentRequests() for why the obvious hints do not discriminate.
   check(
-    'and flags that they are already marked today',
-    queued.data?.requests?.[0]?.markedToday === true
+    'and offers no verdict on whether the claim is honest',
+    queued.data?.requests?.[0]?.decision === null &&
+      !('markedToday' in queued.data.requests[0]),
+    Object.keys(queued.data.requests[0]).join(',')
   )
   const refused = await api('/api/passkey/requests/decide', {
     method: 'POST',
@@ -590,18 +595,10 @@ async function main() {
   const theirs = await api('/api/passkey/requests', { cookie: admin })
   const mine = theirs.data.requests.find((r) => r.rollNo === histStudent.rollNo)
   check('their claim is waiting', Boolean(mine), JSON.stringify(theirs.data).slice(0, 120))
-  // The flag is the fact the admin judges on, so assert it reflects reality
-  // rather than a hardcoded expectation: this student was marked earlier in the
-  // suite, so it must read true.
-  const markedNow =
-    (await count(
-      'attendance',
-      `session_id=eq.${session.id}&student_id=eq.${histStudent.studentId}`
-    )) > 0
   check(
-    'the queue reports their marked-today state correctly',
-    mine?.markedToday === markedNow,
-    `flag ${mine?.markedToday} vs actual ${markedNow}`
+    'and carries what the admin needs to recognise it',
+    mine?.name === histStudent.name && typeof mine?.requestedAt === 'string',
+    JSON.stringify(mine)
   )
   const approved = await api('/api/passkey/requests/decide', {
     method: 'POST',

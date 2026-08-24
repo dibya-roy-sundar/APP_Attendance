@@ -20,24 +20,28 @@ no auth library — the admin is a single password in an env var.
 
 ### 1. Create the database
 
-In the Supabase SQL editor, run [`supabase/schema.sql`](supabase/schema.sql).
-It is idempotent, so re-running it is safe.
+In the Supabase SQL editor, run [`supabase/schema.sql`](supabase/schema.sql),
+then seed the roster (`npm run seed`). That is the whole setup — `schema.sql` is
+the single source of truth for the database and is idempotent, so re-running it
+is safe.
 
-Then run every file in [`supabase/migrations/`](supabase/migrations/) in
-numeric order. They are additive and safe to re-run:
+There is no migrations folder. There used to be four numbered files, but the app
+never went live: it existed only in demo while the identity design was being
+worked out, so when it changed for the last time the tables were dropped and
+recreated and the roster re-seeded from the spreadsheet. Migrating demo data
+would have been ceremony over 47 rows that regenerate in a second, and it would
+have left the schema as a pile of diffs to replay rather than one file to read.
 
-| Migration | What it does |
+Two scripts exist for that path:
+
+| Script | What it does |
 |---|---|
-| `001_configurable_window.sql` | admin-chosen QR rotation period |
-| `002_temporary_access.sql` | deputy access codes |
-| `003_drop_settings_and_reset_allowed.sql` | removes the registration window's storage |
-| `004_passkeys.sql` | **required** — `student_credentials` and `webauthn_challenges` |
+| [`supabase/reset.sql`](supabase/reset.sql) | drops every table — **only** safe while the roster is regenerable from the spreadsheet |
+| [`supabase/alter-001-one-passkey.sql`](supabase/alter-001-one-passkey.sql) | the one-passkey-per-student change, kept as the record of it |
 
-`004` is not optional: passkeys are how students are identified, so without
-those two tables nobody can be marked present. It leaves `students.device_id`
-and `students.enrolled_at` in place — nothing reads them any more, but the
-previous term's bindings stay readable if a question is ever asked. See
-[`docs/superseded/`](docs/superseded/).
+`alter-001` is history rather than a step: `schema.sql` already contains
+everything it did. It is worth reading if you want to see what changed and why.
+The code it replaced is in [`docs/superseded/`](docs/superseded/).
 
 **Before students register, settle your final hostname.** A passkey is bound to
 its domain, so moving from `*.vercel.app` to a real domain later invalidates
@@ -234,22 +238,81 @@ client-side change rather than a cache.
 
 ### Lost or wiped phone
 
-**Nothing for the admin to do.** This used to be a button — **Reset device** —
-and removing it was most of the point of moving to passkeys.
+Most of the time, nothing for the admin to do.
 
-A student on a new phone in the same ecosystem already has their passkey: it
-syncs through iCloud Keychain or Google Password Manager. A student switching
-between ecosystems, or on a phone with no passkey yet, scans the QR, enters
-their roll number once, and creates a second passkey. `student_credentials` is
-one-to-many precisely so that works without anyone's permission.
+**Cleared cookies, cleared site data, a new phone in the same ecosystem** — all
+handled by the phone itself. The passkey lives in the OS credential store and
+syncs through iCloud Keychain or Google Password Manager, so it is already on the
+new device. `/me` offers **Sign in**, which is one biometric prompt and about
+175 ms.
 
-Attendance is never affected either way: those rows key on `student_id`, so the
-record of who was present survives any number of device changes.
+**A genuinely lost phone, or a move from iPhone to Android**, needs a decision by
+a person, and this is the part that changed late.
 
-The only case still needing the admin is a phone too old for passkeys — below
-iOS 16 or Android 9 — and the answer there is to tap that student on the grid
-and mark them by hand. That is deliberate: a weaker second sign-in path would
-just become the one worth attacking.
+Each student may hold **one** passkey, enforced by a unique index on
+`student_id`. Entering a roll number that already has one does not create a
+second — it files a **request**, visible under **More → Phone changes**, and the
+instructor approves or refuses it. Approving *replaces* the old credential, so
+one-per-student still holds afterwards.
+
+That is deliberately more friction than the design it replaced, and the reason is
+a hole the earlier one had. `student_credentials` was originally one-to-many, so
+that switching ecosystems needed nobody's permission. But a roll number is not a
+secret — it is printed on ID cards and read aloud in class — and the only thing
+authorising registration is a live QR token, which everybody in the room can see.
+So a stranger holding the projected QR could type a classmate's roll number, add
+*their own* passkey to that student's record, and mark them present in every
+class from then on. This was found by testing the attack, having previously been
+written up as a feature.
+
+There is no way for the server to tell a lost phone from an opportunist: both are
+an unknown device asking for a roll number that is taken. So it stops asking, and
+puts the question to somebody who is standing in the room with all 47 students.
+
+Attendance is never affected by any of this. Those rows key on `student_id`, so
+the record of who was present survives any number of device changes.
+
+The only case still needing manual marking is a phone too old for passkeys —
+below iOS 16 or Android 9. Tap that student on the grid. That is deliberate: a
+weaker second sign-in path would just become the one worth attacking.
+
+### The phone-changes panel
+
+**More → Phone changes.** Seven days of claims, filterable by All / Pending /
+Approved / Refused. Each row is the roll number, the name, the device that asked,
+when, and what was decided. Two buttons on the pending ones.
+
+It offers **no opinion on whether a claim is honest**, and that is a decision
+rather than an omission. An earlier version showed whether the student was
+already marked present today, and when their existing passkey last worked. Both
+were removed: a proxy attempt happens while the student is absent, and so does a
+genuine lost phone, so the common case for both looks identical. A hint that only
+fires in the rare case is worse than no hint, because it invites trusting it
+instead of asking the student — and the instructor has a far better instrument
+available, which is to ask them to come to the front.
+
+What the history *is* good for is patterns. The same roll number claimed three
+times in a week is visible at a glance, and no heuristic was needed to surface it.
+
+A refused claim is evidence, so it stays in the list for the week. The permanent
+record is `audit_log`, which keeps every `PASSKEY_REQUESTED`, `PASSKEY_APPROVED`
+and `PASSKEY_REJECTED` for good.
+
+Rows past seven days are deleted. There is no scheduler: the seven-day window is
+enforced by the query, so the delete is housekeeping rather than correctness —
+a stale row is invisible whether or not it has been removed yet. It is therefore
+fired *after* the panel's response is sent, via `after()` from `next/server`,
+which adds nothing to the admin's page load. A bare un-awaited promise would not
+do: on Vercel the container can be frozen the moment the response is flushed,
+abandoning the delete halfway. Errors are dropped, because a cleanup that did not
+run has no visible consequence and must not break a working panel. If the panel
+is never opened, nothing is cleaned — accepted, for a table holding a handful of
+rows a term.
+
+A deputy can **see** the panel but not decide anything: both `decide` and
+`remove` return `403`. Somebody covering one class needs to know a student is
+stuck, but changing who owns a passkey belongs to the person who owns the
+register.
 
 ### What a student sees
 
@@ -338,7 +401,7 @@ item above:
 | Two Vercel hostnames | No per-origin storage carries identity |
 | Cleared site data, private mode | Unaffected |
 | New phone, same ecosystem | Syncs automatically |
-| Admin device resets | Gone — there is nothing to reset |
+| Admin device resets | Gone for cookies, cleared data and same-ecosystem phones. A genuinely lost phone needs one approval. |
 
 And it is the first version that is not a bearer token: the private key is
 non-extractable and using it needs the device plus its biometric. Handing a
@@ -361,12 +424,20 @@ private key.
 
 Ours to get right:
 
-1. **Multiple passkeys per student.** `student_credentials` is deliberately
-   one-to-many. If it were one-per-student, somebody moving from iPhone to
-   Android would be back to asking an admin — the exact problem passkeys were
-   adopted to remove.
-2. **Registration is authorised by presence.** Adding a passkey needs a live QR
-   token, so being in the room is the permission. No admin, no email.
+1. **One passkey per student**, enforced by a unique index on `student_id` —
+   not by reading the table first and then writing. Postgres has no race window;
+   check-then-insert does, and it was measured: three simultaneous claims on the
+   same roll number let **two** through. A second claim becomes a request for the
+   instructor rather than an error, so the honest case still has a route.
+
+   This is a reversal. It was first built one-to-many, so that switching
+   ecosystems needed nobody's permission — see **Lost or wiped phone** for the
+   attack that made that untenable.
+2. **Registration is authorised by presence, and presence is not identity.**
+   Adding a *first* passkey needs a live QR token, so being in the room is the
+   permission — no admin, no email. Claiming a roll number that is already taken
+   needs a person, because a live QR token is visible to everybody in the room
+   and a roll number is not a secret.
 3. **The Relying Party ID is the domain.** Passkeys are bound to it. **Moving
    domains invalidates every passkey**, so settle the final hostname before the
    class registers.

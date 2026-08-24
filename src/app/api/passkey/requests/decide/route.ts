@@ -16,7 +16,8 @@ import { decideRequest, replaceCredential, requestById } from '@/lib/passkey'
  *
  * Rejecting keeps the row. A rejected claim is the record of an attempted
  * proxy — who, when, from what device — and that is worth more than a tidy
- * table. Cleanup only removes rows after a fortnight.
+ * table. Cleanup only removes rows once they fall outside the seven-day
+ * window the panel shows; audit_log keeps the decision permanently.
  */
 export async function POST(req: Request) {
   const guard = await guardPrimary()

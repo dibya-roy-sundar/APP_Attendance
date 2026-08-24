@@ -160,11 +160,12 @@ export function deviceLabelFrom(userAgent: string | null): string | null {
 
 /* ── the approval queue ─────────────────────────────────────────────────── */
 
+/** How long an undecided claim stays actionable. */
 const REQUEST_TTL_MS = 3 * 24 * 60 * 60 * 1000
-/** Decided rows are evidence of an attempted proxy, so they outlive the claim. */
-const REQUEST_KEEP_MS = 14 * 24 * 60 * 60 * 1000
+/** How much recent history the panel shows, and how long rows are kept. */
+const HISTORY_MS = 7 * 24 * 60 * 60 * 1000
 
-export type PendingRequest = {
+export type RequestRow = {
   id: string
   studentId: string
   rollNo: string
@@ -172,25 +173,9 @@ export type PendingRequest = {
   deviceLabel: string | null
   requestedAt: string
   expiresAt: string
-  /**
-   * Whether that student already has a mark today.
-   *
-   * A one-sided tell. True is close to damning — somebody signed in as them
-   * successfully, so the registered passkey works and is in the room, and a
-   * claim from a different phone is very unlikely to be theirs. False is only
-   * consistent with a lost phone; it does not confirm one, because an absent
-   * student's roll number looks exactly the same.
-   */
-  markedToday: boolean
-  /**
-   * When the passkey they already hold was last used, if ever.
-   *
-   * The more direct question: is the old phone still working? Used minutes ago
-   * means it is, and a claim is suspect. Never used, or weeks ago, is what a
-   * genuinely lost phone looks like. Null when it has never been used since
-   * registration.
-   */
-  existingLastUsed: string | null
+  /** null while it is still waiting. */
+  decision: 'approved' | 'rejected' | null
+  decidedAt: string | null
 }
 
 /**
@@ -232,50 +217,41 @@ export async function recordRequest(row: {
   if (error && (error as { code?: string }).code !== '23505') throw error
 }
 
-export async function pendingRequests(classDate: string | null): Promise<PendingRequest[]> {
-  await pruneRequests()
+/**
+ * The last week of claims, whatever became of them.
+ *
+ * Deliberately just the facts: who asked, from what, when, and what was
+ * decided. There is no attempt to guess which claims are honest.
+ *
+ * An earlier version showed whether the student was already marked present, and
+ * when their existing passkey last worked. Both were dropped because they do not
+ * discriminate where it matters: a proxy attempt happens while the student is
+ * absent, and so does a genuine lost phone, so the common case for both looks
+ * identical. A flag that only fires in the rare case is worse than none, because
+ * it invites trusting it instead of asking the student — and the admin is in the
+ * room with all 47 of them, which is a better instrument than any heuristic.
+ *
+ * The permanent record is audit_log, which keeps every PASSKEY_REQUESTED,
+ * PASSKEY_APPROVED and PASSKEY_REJECTED for good. This table is only the
+ * working queue and its recent history, so it can be pruned freely.
+ *
+ * The window is enforced here, by the query. Cleanup is therefore housekeeping
+ * rather than correctness — a row past the window is invisible whether or not
+ * it has been deleted yet — so the caller fires pruneRequests() after the
+ * response instead of making the admin wait on a DELETE.
+ */
+export async function recentRequests(): Promise<RequestRow[]> {
+  const since = new Date(Date.now() - HISTORY_MS).toISOString()
   const { data, error } = await db()
     .from('passkey_requests')
-    .select('id, student_id, device_label, requested_at, expires_at')
-    .is('decided_at', null)
-    .gte('expires_at', new Date().toISOString())
-    .order('requested_at', { ascending: true })
+    .select('id, student_id, device_label, requested_at, expires_at, decision, decided_at')
+    .gte('requested_at', since)
+    .order('requested_at', { ascending: false })
   if (error) throw error
   if (!data || data.length === 0) return []
 
   const students = await listStudents()
   const byId = new Map(students.map((s) => [s.id, s]))
-
-  // When each of these students last used the passkey they already hold. One
-  // query for the whole queue rather than one per row.
-  const held = await db()
-    .from('student_credentials')
-    .select('student_id, last_used_at')
-    .in(
-      'student_id',
-      data.map((r) => r.student_id)
-    )
-  if (held.error) throw held.error
-  const lastUsed = new Map((held.data ?? []).map((c) => [c.student_id, c.last_used_at]))
-
-  // Whether they are already marked today is the single most useful hint: a
-  // student who has been marked present and is now asking to move their passkey
-  // is a very different story from one who has not turned up.
-  let marked = new Set<string>()
-  if (classDate) {
-    const session = await db()
-      .from('sessions')
-      .select('id')
-      .eq('class_date', classDate)
-      .maybeSingle()
-    if (session.data?.id) {
-      const marks = await db()
-        .from('attendance')
-        .select('student_id')
-        .eq('session_id', session.data.id)
-      marked = new Set((marks.data ?? []).map((m) => m.student_id))
-    }
-  }
 
   return data.flatMap((r) => {
     const student = byId.get(r.student_id)
@@ -289,8 +265,8 @@ export async function pendingRequests(classDate: string | null): Promise<Pending
         deviceLabel: r.device_label,
         requestedAt: r.requested_at,
         expiresAt: r.expires_at,
-        markedToday: marked.has(r.student_id),
-        existingLastUsed: lastUsed.get(r.student_id) ?? null,
+        decision: r.decision,
+        decidedAt: r.decided_at,
       },
     ]
   })
@@ -334,9 +310,23 @@ export async function replaceCredential(
   if (saved.conflict) throw new Error('approved credential is already registered elsewhere')
 }
 
-async function pruneRequests(): Promise<void> {
+/**
+ * Drops anything past the window the panel shows.
+ *
+ * No scheduler. This is fired after the panel's response is sent, which is the
+ * only place the queue is ever read — proportionate for a table holding a
+ * handful of rows a term, and one less thing that can silently stop running.
+ * Nothing is lost either way: audit_log keeps every request and decision
+ * permanently, and recentRequests() filters by date regardless, so a row that
+ * survives a failed cleanup is still invisible.
+ *
+ * Failure is swallowed by the caller on purpose. There is no user-facing
+ * consequence to a delete that did not happen, and an error here must never
+ * turn a working panel into a broken one.
+ */
+export async function pruneRequests(): Promise<void> {
   await db()
     .from('passkey_requests')
     .delete()
-    .lt('requested_at', new Date(Date.now() - REQUEST_KEEP_MS).toISOString())
+    .lt('requested_at', new Date(Date.now() - HISTORY_MS).toISOString())
 }

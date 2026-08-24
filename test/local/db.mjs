@@ -90,7 +90,7 @@ export const remove = (table, query) => {
 
 /**
  * Writes a row directly, for setting up a state the app cannot reach quickly —
- * a request that is already a fortnight old, say. Guarded like the others: it
+ * a request that is already weeks old, say. Guarded like the others: it
  * writes to the same database production uses.
  */
 export const insert = (table, body) => {
@@ -123,7 +123,7 @@ export async function one(table, query) {
  */
 export async function resetToRoster() {
   await remove('webauthn_challenges', 'challenge=not.is.null')
-  // Decided requests are deliberately kept for a fortnight in production —
+  // Decided requests are deliberately kept for a week in production —
   // a refused claim is evidence of an attempted proxy. A test reset clears
   // them anyway, or counts carry over between suites.
   await remove('passkey_requests', 'id=not.is.null')

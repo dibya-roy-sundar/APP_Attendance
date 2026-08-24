@@ -14,6 +14,7 @@ import { phone } from './student.mjs'
 const BASE = process.env.BASE_URL ?? 'http://localhost:3100'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 const WINDOW = 15
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 let pass = 0
 let fail = 0
@@ -535,9 +536,9 @@ async function main() {
   // There is no scheduler. Cleanup runs when the admin opens the panel, which
   // is the only place the queue is read — proportionate for a table that holds
   // a handful of rows a term, and one less thing that can silently stop
-  // running. Rejected rows are kept for a fortnight on purpose: a refused claim
+  // running. Rejected rows are kept for a week on purpose: a refused claim
   // is the record of an attempted proxy.
-  console.log('\n- the queue keeps evidence for a fortnight, then tidies -')
+  console.log('\n- the panel shows a week of history and tidies itself -')
   {
     const DAY = 86_400_000
     const seed = (studentId, credentialId, agoMs, decision) =>
@@ -552,21 +553,63 @@ async function main() {
 
     await remove('passkey_requests', 'id=not.is.null')
     await seed(students[30].id, 'age-1h', 3_600_000, null)
-    await seed(students[31].id, 'age-5d', 5 * DAY, 'rejected')
-    await seed(students[32].id, 'age-13d', 13 * DAY, 'rejected')
-    await seed(students[33].id, 'age-20d', 20 * DAY, 'rejected')
+    await seed(students[31].id, 'age-2d', 2 * DAY, 'rejected')
+    await seed(students[32].id, 'age-6d', 6 * DAY, 'approved')
+    await seed(students[33].id, 'age-9d', 9 * DAY, 'rejected')
     await seed(students[34].id, 'age-40d', 40 * DAY, 'approved')
     check('five rows seeded across a range of ages', (await count('passkey_requests')) === 5)
 
     const queue = await api('/api/passkey/requests', { cookie: admin })
-    check('only the undecided, unexpired one is offered', queue.data.requests.length === 1)
-    check('and it is the fresh one', queue.data.requests[0].rollNo === students[30].roll_no)
-
-    const kept = (await select('passkey_requests', 'select=credential_id')).map((r) => r.credential_id)
-    check('rows past a fortnight are gone', !kept.includes('age-20d') && !kept.includes('age-40d'), kept.join(','))
+    // The panel shows a week of history, whatever became of it — the admin
+    // filters by status client-side. Only rows older than that are dropped.
+    const shown = queue.data.requests
+    check('a week of history is returned, not only what is pending', shown.length === 3, `${shown.length}`)
     check(
-      'refused rows inside the fortnight are kept as evidence',
-      kept.includes('age-5d') && kept.includes('age-13d'),
+      'newest first',
+      shown[0].rollNo === students[30].roll_no,
+      shown.map((r) => r.rollNo).join(',')
+    )
+    check(
+      'each row carries its decision, so the panel can filter',
+      shown.filter((r) => r.decision === null).length === 1 &&
+        shown.filter((r) => r.decision === 'rejected').length === 1 &&
+        shown.filter((r) => r.decision === 'approved').length === 1,
+      JSON.stringify(shown.map((r) => r.decision))
+    )
+    check(
+      'and no guessing at honesty is offered',
+      !('markedToday' in shown[0]) && !('existingLastUsed' in shown[0]),
+      Object.keys(shown[0]).join(',')
+    )
+
+    // Cleanup is fired after the response, so the correct answer does not depend
+    // on it having happened: the seven-day filter in the query is what hides the
+    // stale rows. Prove that first, on the payload itself.
+    const rolls = shown.map((r) => r.rollNo)
+    check(
+      'the stale rows are absent from the response regardless of cleanup',
+      rolls.length === 3 &&
+        !rolls.includes(students[33].roll_no) &&
+        !rolls.includes(students[34].roll_no) &&
+        rolls.includes(students[30].roll_no) &&
+        rolls.includes(students[31].roll_no) &&
+        rolls.includes(students[32].roll_no),
+      rolls.join(',')
+    )
+
+    // Then wait for the delete to land, which proves `after` actually runs
+    // rather than being abandoned when the response was flushed.
+    let kept = []
+    for (let i = 0; i < 40; i++) {
+      kept = (await select('passkey_requests', 'select=credential_id')).map((r) => r.credential_id)
+      if (kept.length === 3) break
+      await sleep(100)
+    }
+    check('cleanup ran behind the response', kept.length === 3, `${kept.length} rows`)
+    check('rows past a week are gone', !kept.includes('age-9d') && !kept.includes('age-40d'), kept.join(','))
+    check(
+      'rows inside the week are kept',
+      kept.includes('age-1h') && kept.includes('age-2d') && kept.includes('age-6d'),
       kept.join(',')
     )
     await remove('passkey_requests', 'id=not.is.null')

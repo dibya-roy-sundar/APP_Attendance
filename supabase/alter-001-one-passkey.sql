@@ -71,6 +71,6 @@ create index if not exists passkey_requests_pending_idx
 
 -- Decided and expired rows are kept for a while on purpose: a rejected claim is
 -- the record of an attempted proxy, and that is worth more than a tidy table.
--- Cleanup runs on read and only removes rows older than 14 days.
+-- Cleanup runs behind the panel's response and only removes rows older than 7 days.
 
 alter table passkey_requests enable row level security;
