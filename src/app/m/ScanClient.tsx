@@ -22,13 +22,62 @@ import { useCallback, useRef, useState } from "react";
  * offers no way to ask whether a passkey exists. So this screen shows a button
  * rather than marking on load, and a failed sign-in is how we learn the phone
  * has no passkey yet.
+ *
+ * That last point used to be a hole. A cancelled fingerprint prompt and an empty
+ * keychain are indistinguishable — WebAuthn will not say which — and this screen
+ * treated both as "offer registration". So anyone could tap Mark me present,
+ * cancel the prompt, and be handed a form that would enrol somebody else's roll
+ * number on their phone. It was found in production by doing exactly that.
+ *
+ * Registration is no longer offered on a guess. Three things now have to agree:
+ *
+ * 1. The authenticator refuses outright if this phone already holds any
+ *    classmate's passkey — the server sends the whole class in
+ *    excludeCredentials, so this is enforced by the OS rather than by this file.
+ * 2. This file remembers, in localStorage, that the phone has been enrolled, and
+ *    will not show the form while it does. Clearable, so it is an affordance fix
+ *    rather than a control.
+ * 3. The server queues any enrolment attempted from a browser already holding a
+ *    session for a different student, instead of writing it.
  */
+
+/**
+ * Set once this phone has proved it holds a passkey. Only ever suppresses the
+ * registration form — it can never authorise anything, so clearing it costs a
+ * student nothing but an extra tap.
+ */
+const ENROLLED_KEY = "att_enrolled";
+
+function markEnrolled() {
+  try {
+    window.localStorage.setItem(ENROLLED_KEY, "1");
+  } catch {
+    // Private mode, or storage blocked. The other two layers still hold.
+  }
+}
+
+function looksEnrolled(): boolean {
+  try {
+    return window.localStorage.getItem(ENROLLED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function forgetEnrolled() {
+  try {
+    window.localStorage.removeItem(ENROLLED_KEY);
+  } catch {
+    // Nothing to do.
+  }
+}
 
 type Result =
   | { kind: "ready" }
   | { kind: "working" }
   | { kind: "marked"; name: string; classDate: string }
   | { kind: "register"; prompt: string | null }
+  | { kind: "couldNotConfirm"; canEnrol: boolean }
   | { kind: "expired" }
   | { kind: "offline" }
   | { kind: "unsupported" }
@@ -114,15 +163,12 @@ export function ScanClient({
           optionsJSON: opts.data.options,
         });
       } catch {
-        // Cancelled, or there is no passkey for this site on this phone. The
-        // two are indistinguishable by design — WebAuthn will not tell a page
-        // whether a credential exists — so offer registration and let the
-        // student decide.
-        setResult({
-          kind: "register",
-          prompt:
-            "If you have not set this phone up yet, enter your roll number once.",
-        });
+        // Cancelled, or no passkey here. Indistinguishable by design, so this
+        // no longer guesses: it offers to try again, and only offers enrolment
+        // when nothing suggests the phone is already set up. Choosing to enrol
+        // is then a deliberate second tap rather than where cancelling lands
+        // you.
+        setResult({ kind: "couldNotConfirm", canEnrol: !looksEnrolled() });
         return;
       }
 
@@ -131,12 +177,17 @@ export function ScanClient({
         challenge: opts.data.options.challenge,
       });
       if (done.ok) {
+        markEnrolled();
         setResult({
           kind: "marked",
           name: done.data.name,
           classDate: done.data.classDate,
         });
       } else if (done.data.error === "UNKNOWN_PASSKEY") {
+        // The phone holds a key this server no longer knows — the admin removed
+        // it, or the database was rebuilt. Genuinely needs enrolling again, so
+        // the local flag is wrong and has to go.
+        forgetEnrolled();
         setResult({ kind: "register", prompt: MESSAGES.UNKNOWN_PASSKEY });
       } else if (
         done.data.error === "BAD_TOKEN" ||
@@ -186,18 +237,23 @@ export function ScanClient({
           optionsJSON: opts.data.options,
         });
       } catch (err) {
-        // InvalidStateError means this phone already holds a passkey for that
-        // student: the server sent it in excludeCredentials and the
-        // authenticator refused to make a second one. That is the right
-        // outcome, and telling them "it did not finish" would send them round
-        // the same loop.
-        const already =
-          err instanceof Error && err.name === "InvalidStateError";
+        // InvalidStateError means this phone already holds a passkey for
+        // somebody in this class — the server sends the whole class in
+        // excludeCredentials, so the authenticator refuses to make a second
+        // one. Whether that is the student's own key or a classmate's, the
+        // answer is the same: this phone does not enrol again.
+        if (err instanceof Error && err.name === "InvalidStateError") {
+          markEnrolled();
+          setResult({
+            kind: "couldNotConfirm",
+            canEnrol: false,
+          });
+          return;
+        }
         setResult({
           kind: "register",
-          prompt: already
-            ? "This phone is already set up for that roll number. Tap “Already set up — try again”."
-            : "Your phone did not finish creating the passkey. Tap to try again.",
+          prompt:
+            "Your phone did not finish creating the passkey. Tap to try again.",
         });
         return;
       }
@@ -208,6 +264,7 @@ export function ScanClient({
       });
       if (done.ok) {
         setRollNo("");
+        markEnrolled();
         setResult({
           kind: "marked",
           name: done.data.name,
@@ -338,6 +395,40 @@ export function ScanClient({
             Attendance needs iOS 16 or later, or Android 9 or later. Ask the
             admin to mark you present by hand today.
           </p>
+          <HomeLink />
+        </Card>
+      )}
+
+      {result.kind === "couldNotConfirm" && (
+        <Card tone="warn">
+          <h1 className="text-xl font-semibold">Not confirmed</h1>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            {result.canEnrol
+              ? "Either the prompt was cancelled, or this phone has not been set up yet. Your phone will not tell us which."
+              : "The prompt was cancelled, or your face or fingerprint was not recognised. This phone is already set up, so there is nothing to enter."}
+          </p>
+          <button
+            type="button"
+            onClick={markPresent}
+            className="mt-5 min-h-11 w-full rounded-xl bg-slate-900 px-4 py-3 text-base font-medium text-white dark:bg-white dark:text-slate-900"
+          >
+            Try again
+          </button>
+          {/*
+            Offered only when nothing suggests this phone is already enrolled,
+            and never as the landing place for a cancelled prompt. Cancelling
+            used to lead straight to this form, which is how one phone could
+            enrol somebody else's roll number.
+          */}
+          {result.canEnrol && (
+            <button
+              type="button"
+              onClick={() => setResult({ kind: "register", prompt: null })}
+              className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-4 py-3 text-sm dark:border-slate-700"
+            >
+              I have not set up this phone yet
+            </button>
+          )}
           <HomeLink />
         </Card>
       )}

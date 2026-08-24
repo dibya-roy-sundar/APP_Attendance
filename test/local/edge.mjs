@@ -124,10 +124,15 @@ async function main() {
   // Device binding enforced "one phone, one student" with a unique column. A
   // passkey is not a device, so that constraint is gone — and it turns out the
   // useful half survives anyway: a credential belongs to exactly one student,
-  // so a phone that signs in is always the student it registered as. What it
-  // can now do, deliberately, is hold a second passkey for a second student —
-  // a shared family phone, or the admin's own phone.
-  console.log('\n- one phone, more than one passkey -')
+  // so a phone that signs in is always the student it registered as.
+  //
+  // It used to say a phone could *deliberately* hold a second passkey for a
+  // second student — "a shared family phone, or the admin's own phone" — and
+  // asserted that as a feature. It was not a feature. It let one handset
+  // collect a passkey for every classmate who had not enrolled yet and mark
+  // them present for the rest of the term. The section below now asserts the
+  // refusal; the full case is at the end of this file.
+  console.log('\n- one phone holds one passkey -')
   // Same phone, same student, twice: refused by the authenticator itself, not
   // by us. The server puts that student's existing credentials in
   // excludeCredentials, and a platform authenticator throws InvalidStateError
@@ -144,22 +149,24 @@ async function main() {
     (await count('student_credentials', `student_id=eq.${students[0].id}`)) === 1
   )
 
+  // A different student from the same phone is refused for the same reason, by
+  // the same mechanism: the exclusion list is the whole class, not just this
+  // student, so the authenticator will not make a second key at all.
   const secondStudent = await phoneOne.register(session.id, tok(), rollOf(2))
   check(
-    'one phone may register a second student',
-    secondStudent.data?.status === 'REGISTERED',
+    'one phone may not register a second student',
+    secondStudent.data?.error === 'InvalidStateError',
     JSON.stringify(secondStudent.data)
   )
   check(
-    'each passkey belongs to exactly one student',
-    (await count('student_credentials')) === 3
+    'no credential was written for them',
+    (await count('student_credentials', `student_id=eq.${students[2].id}`)) === 0
   )
-  // The authenticator offers the most recent resident credential, so signing in
-  // marks whoever it last registered — never an arbitrary student.
+  // Signing in therefore still marks the one student this phone belongs to.
   const whoAmI = await phoneOne.markPresent(session.id, tok())
   check(
     'signing in marks the student that passkey belongs to',
-    whoAmI.data?.rollNo === rollOf(2),
+    whoAmI.data?.rollNo === rollOf(0),
     JSON.stringify(whoAmI.data)
   )
 
@@ -757,6 +764,79 @@ async function main() {
       `${spent.status} ${JSON.stringify(spent.data).slice(0, 80)}`
     )
     await remove('webauthn_challenges', 'challenge=not.is.null')
+  }
+
+  // ── one phone, one student ────────────────────────────────────────────────
+  //
+  // Regression for a live vulnerability. "One passkey per student" was enforced
+  // by a unique index; "one passkey per device" was not enforced at all. So a
+  // phone that had enrolled honestly could go on to enrol every classmate who
+  // had not, and mark all of them present for the rest of the term — needing
+  // nothing from those students again. Reproduced first, then fixed.
+  //
+  // The screen made it easy to find: cancelling the fingerprint prompt landed
+  // you on the enrolment form, because WebAuthn will not say whether a
+  // cancellation means "no credential here".
+  console.log('\n- one phone cannot collect other people\'s roll numbers -')
+  {
+    // A clean slate inside the session this suite already opened — class_date
+    // is unique, so there is no second session to be had today.
+    await remove('student_credentials', 'id=not.is.null')
+    await remove('passkey_requests', 'id=not.is.null')
+    await remove('attendance', `session_id=eq.${session.id}`)
+    const roster = students
+
+    const attacker = phone(BASE)
+    const own = await attacker.register(session.id, tok(), roster[0].roll_no)
+    check('a phone enrols its owner normally', own.status === 200, JSON.stringify(own.data).slice(0, 80))
+
+    // Layer 1: the authenticator refuses, because the server now sends every
+    // credential in the class in excludeCredentials rather than only this
+    // student's. This is what a real phone does.
+    const second = await attacker.register(session.id, tok(), roster[1].roll_no)
+    check(
+      'the same phone cannot enrol a classmate — the authenticator refuses',
+      second.stage === 'authenticator' && second.data.error === 'InvalidStateError',
+      `${second.stage} ${JSON.stringify(second.data)}`
+    )
+    check('so no second credential exists', (await count('student_credentials')) === 1)
+    check(
+      'and the classmate is not present',
+      (await count('attendance', `session_id=eq.${session.id}&student_id=eq.${roster[1].id}`)) === 0
+    )
+
+    // Layer 3: a caller that is not a real authenticator can drop the exclusion
+    // list, and the server cannot tell. The session cookie catches that case —
+    // enrolling a second roll number from a browser already signed in as
+    // somebody else is never the innocent first-time path.
+    const scripted = await attacker.register(session.id, tok(), roster[1].roll_no, {
+      ignoreExclusions: true,
+    })
+    check(
+      'dropping the exclusion list does not help: the cookie names another student',
+      scripted.status === 409 && scripted.data.error === 'NEEDS_APPROVAL',
+      `${scripted.status} ${JSON.stringify(scripted.data).slice(0, 70)}`
+    )
+    check('still one credential', (await count('student_credentials')) === 1)
+    check('nobody else marked', (await count('attendance', `session_id=eq.${session.id}`)) === 1)
+    check('the attempt is queued instead of written', (await count('passkey_requests')) === 1)
+    const why = await one(
+      'audit_log',
+      'select=reason&action=eq.PASSKEY_REQUESTED&order=id.desc&limit=1'
+    )
+    check(
+      'and the audit entry records why it was held',
+      /already signed in as another student/.test(why?.reason ?? ''),
+      JSON.stringify(why)
+    )
+
+    // The honest case still works: a phone with no passkey and no session,
+    // enrolling a roll number nobody holds. This is also the residual gap —
+    // see README, "What none of this fixes".
+    const fresh = phone(BASE)
+    const ok2 = await fresh.register(session.id, tok(), roster[2].roll_no)
+    check('a genuinely new phone still enrols normally', ok2.status === 200, JSON.stringify(ok2.data).slice(0, 70))
+    check('two credentials, two students, two devices', (await count('student_credentials')) === 2)
   }
 
   console.log(`\n${'='.repeat(60)}`)

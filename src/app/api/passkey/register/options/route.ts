@@ -1,6 +1,13 @@
 import { fail, ok, readJson } from '@/lib/api'
 import { MAX_ROLL_LENGTH, getSessionById, getStudentByRollNo } from '@/lib/data'
-import { RP_NAME, credentialsForStudent, expectedOrigin, rpID, storeChallenge } from '@/lib/passkey'
+import {
+  RP_NAME,
+  allCredentials,
+  credentialsForStudent,
+  expectedOrigin,
+  rpID,
+  storeChallenge,
+} from '@/lib/passkey'
 import { sweepChallenges } from '@/lib/sweep'
 import { verifyToken } from '@/lib/token'
 import { readStudentSession } from '@/lib/student-session'
@@ -35,6 +42,10 @@ export async function POST(req: Request) {
   if (!student) return fail('UNKNOWN_ROLL', 404)
 
   const existing = await credentialsForStudent(student.id)
+  // Every credential in the class, not only this student's. See allCredentials()
+  // for why the exclusion list is the only place "one passkey per phone" can be
+  // enforced, and for the limits of enforcing it there.
+  const classCredentials = await allCredentials()
 
   /*
    * A roll number that already has a passkey cannot be claimed again by a
@@ -77,9 +88,18 @@ export async function POST(req: Request) {
     userName: student.roll_no,
     userDisplayName: student.name,
     attestationType: 'none',
-    // Stops the same device silently registering twice for one student, while
-    // still allowing a *different* device to be added.
-    excludeCredentials: existing.map((c) => ({
+    // A phone that already holds any student's passkey cannot create a second
+    // one: the authenticator matches this list against its own keychain and
+    // throws InvalidStateError.
+    //
+    // It used to list only this student's credentials, which enforced "one
+    // passkey per student" — something the unique index already guarantees —
+    // and left "one passkey per device" completely unguarded. A phone could
+    // therefore collect a passkey for every classmate who had not enrolled yet
+    // and mark all of them present for the rest of the term. That was found by
+    // reproducing it: five students, one handset, nothing in the approval
+    // queue. See README, "One phone, many roll numbers".
+    excludeCredentials: classCredentials.map((c) => ({
       id: c.credential_id,
       transports: (c.transports ?? undefined) as never,
     })),

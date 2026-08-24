@@ -48,7 +48,21 @@ export async function POST(req: Request) {
   const consumed = await consumeChallenge(challenge, 'register')
   if (!consumed || !consumed.studentId) return fail('CHALLENGE_EXPIRED', 409)
 
-  const ownSession = readStudentSession(req) === consumed.studentId
+  const heldSession = readStudentSession(req)
+  const ownSession = heldSession === consumed.studentId
+  /*
+   * This browser already holds a session this server issued for a *different*
+   * student. Enrolling a second roll number from here is therefore never the
+   * innocent first-time case, whatever else it might be, so it is queued for
+   * the admin rather than written.
+   *
+   * The cookie is clearable, so this is a cost, not a wall — and deliberately
+   * so: the check that actually enforces one passkey per phone is
+   * excludeCredentials, which the authenticator applies before any of this runs.
+   * This catches the same attempt one layer further in, for the case where the
+   * caller controls the WebAuthn call and simply dropped the exclusion list.
+   */
+  const differentStudent = heldSession !== null && heldSession !== consumed.studentId
 
   let verification
   try {
@@ -87,7 +101,7 @@ export async function POST(req: Request) {
    */
   if (!ownSession) {
     const held = await credentialsForStudent(consumed.studentId)
-    if (held.length > 0) {
+    if (held.length > 0 || differentStudent) {
       await recordRequest({
         studentId: consumed.studentId,
         ...shape,
@@ -99,7 +113,9 @@ export async function POST(req: Request) {
         studentId: consumed.studentId,
         sessionId: session.id,
         actor: 'student',
-        reason: `claim from ${shape.deviceLabel ?? 'unknown device'}, awaiting approval`,
+        reason: differentStudent
+          ? `claim from ${shape.deviceLabel ?? 'unknown device'} already signed in as another student`
+          : `claim from ${shape.deviceLabel ?? 'unknown device'}, awaiting approval`,
       })
       return fail('NEEDS_APPROVAL', 409, { name: student.name })
     }

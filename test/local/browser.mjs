@@ -164,11 +164,24 @@ async function passkeyJourney(sessionInfo, adminCookie) {
       },
     })
 
-    // First time on this phone: one roll number, then a passkey.
+    // First time on this phone. The failed assertion no longer drops straight
+    // onto the enrolment form: cancelling a fingerprint prompt and having no
+    // passkey are indistinguishable, and treating both as "here is a form"
+    // is what let one phone enrol somebody else's roll number. Enrolling is
+    // now a deliberate second tap.
     await page.goto(url(), { waitUntil: 'networkidle' })
     await page.getByRole('button', { name: 'Mark me present' }).click()
+    await page.waitForSelector('text=Not confirmed', { timeout: 30000 })
+    check('a failed prompt does not hand over the enrolment form', true)
+    check(
+      'it offers to try again',
+      await page.getByRole('button', { name: 'Try again' }).isVisible()
+    )
+    const enrol = page.getByRole('button', { name: 'I have not set up this phone yet' })
+    check('and enrolling is a separate, deliberate choice', await enrol.isVisible())
+    await enrol.click()
     await page.waitForSelector('text=Set up this phone', { timeout: 30000 })
-    check('a phone with no passkey is offered set-up', true)
+    check('a phone with no passkey can still be set up', true)
     await page.getByLabel('Roll number').fill(student.roll_no)
     await page.getByRole('button', { name: /Create passkey and mark present/ }).click()
     await page.getByText('Present', { exact: true }).waitFor({ timeout: 30000 })
@@ -187,6 +200,109 @@ async function passkeyJourney(sessionInfo, adminCookie) {
       'and still one attendance row',
       (await count('attendance', `session_id=eq.${id}&student_id=eq.${student.id}`)) === 1
     )
+
+    // Does a real authenticator honour the widened exclusion list? Asked
+    // directly rather than through the form, because reaching the form requires
+    // an assertion to fail first, and an enrolled phone's assertions succeed.
+    // This is the ground truth the software authenticator in the other suites
+    // is only a model of.
+    const exclusionProbe = await page.evaluate(async (rollNo) => {
+      const b64 = (v) =>
+        Uint8Array.from(atob(v.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0))
+      const res = await fetch('/api/passkey/register/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          s: new URLSearchParams(location.search).get('s'),
+          t: new URLSearchParams(location.search).get('t'),
+          rollNo,
+        }),
+      })
+      const { options } = await res.json()
+      const excluded = (options.excludeCredentials ?? []).length
+      try {
+        await navigator.credentials.create({
+          publicKey: {
+            ...options,
+            challenge: b64(options.challenge),
+            user: { ...options.user, id: b64(options.user.id) },
+            excludeCredentials: (options.excludeCredentials ?? []).map((c) => ({
+              ...c,
+              id: b64(c.id),
+            })),
+          },
+        })
+        return { outcome: 'created', excluded }
+      } catch (e) {
+        return { outcome: e.name, excluded }
+      }
+    }, roster[1].roll_no)
+
+    check(
+      'the exclusion list carries the whole class, not just the roll number asked for',
+      exclusionProbe.excluded === 1,
+      `${exclusionProbe.excluded} entries with one student enrolled`
+    )
+    check(
+      'a real authenticator refuses a second passkey on the same phone',
+      exclusionProbe.outcome === 'InvalidStateError',
+      exclusionProbe.outcome
+    )
+    check(
+      'so no credential exists for that classmate',
+      (await count('student_credentials', `student_id=eq.${roster[1].id}`)) === 0
+    )
+    check(
+      'and they are not marked present',
+      (await count('attendance', `session_id=eq.${id}&student_id=eq.${roster[1].id}`)) === 0
+    )
+    const held = await cdp.send('WebAuthn.getCredentials', { authenticatorId })
+    check(
+      'the keychain still holds exactly one credential',
+      held.credentials.length === 1,
+      `${held.credentials.length}`
+    )
+
+    // The UI half of the same rule, in a context of its own so it cannot
+    // disturb the journey above: a phone this page believes is already enrolled
+    // is never offered the enrolment form, even when the prompt fails.
+    //
+    // The flag is set directly rather than earned, because it is an affordance
+    // and not a control — it is clearable, and what actually stops the attack is
+    // the authenticator refusal proved just above. Its job is to stop a
+    // cancelled prompt from *handing over* the form, which is how the hole was
+    // found.
+    {
+      const other = await browser.newContext({ ...devices['Pixel 7'] })
+      const p2 = await other.newPage()
+      const c2 = await other.newCDPSession(p2)
+      await c2.send('WebAuthn.enable')
+      await c2.send('WebAuthn.addVirtualAuthenticator', {
+        options: {
+          protocol: 'ctap2',
+          transport: 'internal',
+          hasResidentKey: true,
+          hasUserVerification: true,
+          isUserVerified: true,
+          automaticPresenceSimulation: true,
+        },
+      })
+      await p2.goto(url(), { waitUntil: 'networkidle' })
+      await p2.evaluate(() => localStorage.setItem('att_enrolled', '1'))
+      await p2.reload({ waitUntil: 'networkidle' })
+      await p2.getByRole('button', { name: 'Mark me present' }).click()
+      await p2.waitForSelector('text=Not confirmed', { timeout: 30000 })
+      check(
+        'a failed prompt on a phone marked enrolled offers no way in',
+        (await p2.getByRole('button', { name: 'I have not set up this phone yet' }).count()) === 0
+      )
+      check('only Try again', await p2.getByRole('button', { name: 'Try again' }).isVisible())
+      check(
+        'and no roll number field anywhere on screen',
+        (await p2.getByLabel('Roll number').count()) === 0
+      )
+      await other.close()
+    }
 
     // The whole point of the change: browser storage no longer holds identity.
     await context.clearCookies()
@@ -221,8 +337,14 @@ async function passkeyJourney(sessionInfo, adminCookie) {
       },
     })
     await context.clearCookies()
+    await page.evaluate(() => localStorage.clear())
     await page.goto(url(), { waitUntil: 'networkidle' })
     await page.getByRole('button', { name: 'Mark me present' }).click()
+    // One extra tap: a failed prompt no longer lands on the enrolment form by
+    // itself, because a cancelled prompt is indistinguishable from an empty
+    // keychain and that ambiguity was exploitable.
+    await page.waitForSelector('text=Not confirmed', { timeout: 30000 })
+    await page.getByRole('button', { name: 'I have not set up this phone yet' }).click()
     await page.waitForSelector('text=Set up this phone', { timeout: 30000 })
     check('a replacement phone is offered set-up, not an error', true)
 

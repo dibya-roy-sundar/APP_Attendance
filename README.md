@@ -167,21 +167,32 @@ Both are deliberate — see decision 5, **Bearer tokens read, signatures write**
 
 ### Getting a passkey in the first place
 
-Reached only from `UNKNOWN_PASSKEY` above. The roll number is asked for exactly
-once in the term, and the fork at the bottom is the whole security argument of the
-design: claiming an *unclaimed* roll number needs only presence, claiming one that
-is already taken needs a person.
+Reached only by a deliberate tap after a failed prompt — never as the place a
+cancelled fingerprint dialog lands you, which is the bug this shape exists to
+prevent. The roll number is asked for exactly once in the term.
+
+Three of these gates were added after one phone was found collecting passkeys for
+classmates who had not enrolled: the local flag, the authenticator's exclusion
+check, and the signed-in-as-someone-else check. The fork at the bottom is the
+older argument and still the main one — claiming an *unclaimed* roll number needs
+only presence, claiming one that is already taken needs a person.
 
 ```mermaid
 flowchart TD
-  a(["UNKNOWN_PASSKEY · the screen asks for a roll number"]) --> opts["POST register/options<br/>with the roll number"]
+  a(["Not confirmed · the student taps<br/>I have not set up this phone yet"]) --> flag{"Does this browser think<br/>the phone is enrolled?"}
+  flag -- yes --> hide(["The form is never shown"]):::bad
+  flag -- no --> opts["POST register/options<br/>with the roll number"]
   opts --> gate{"Session live and<br/>token still valid?"}
   gate -- no --> refused
-  gate -- yes --> create["OS creates a keypair.<br/>The private half never leaves the phone."]
+  gate -- yes --> excl{"Does this phone already hold<br/>ANY classmate's passkey?"}
+  excl -- "yes · InvalidStateError,<br/>the authenticator refuses" --> refused
+  excl -- no --> create["OS creates a keypair.<br/>The private half never leaves the phone."]
   create --> verify["POST register/verify"]
   verify --> att{"Attestation, origin<br/>and RP ID all valid?"}
   att -- "no · BAD_ATTESTATION" --> refused
-  att -- yes --> taken{"Does that roll number<br/>already hold a passkey?"}
+  att -- yes --> other{"Is this browser signed in<br/>as a different student?"}
+  other -- yes --> queue
+  other -- no --> taken{"Does that roll number<br/>already hold a passkey?"}
   taken -- "yes, and you cannot prove<br/>the old phone is yours" --> queue
   taken -- no --> ins["INSERT student_credentials"]
   ins --> race{"Won the race to<br/>the unique index?"}
@@ -375,7 +386,8 @@ Every one was either measured or arrived at by breaking the previous version.
 | 6 | **One passkey per student, enforced by a unique index** rather than by checking first. | Postgres has no race window; check-then-insert does, and it let two of three simultaneous claims through when tested. | [Guarding the credentials](#guarding-the-credentials) |
 | 7 | **An approval queue, not a reset button.** | A lost phone and a stranger's phone are indistinguishable to the server. So a person decides, and every refused claim becomes evidence with a device and a time on it. | [Lost or wiped phone](#lost-or-wiped-phone) |
 | 8 | **The queue shows facts, not guesses.** No "already marked today", no "old phone last used". | Neither discriminates: a proxy attempt happens while the student is absent, and so does a genuine lost phone. A hint that only fires in the rare case invites trusting it instead of asking the student. | [The phone-changes panel](#the-phone-changes-panel) |
-| 9 | **Registration is authorised by presence**, not by an admin-controlled window. | The window only defended a self-correcting case. Holding a live QR token means being in the room, and that is the permission. | [Registration, and why there is no window](#registration-and-why-there-is-no-window) |
+| 9 | **Registration is authorised by presence**, not by an admin-controlled window. **Partly wrong** — the window was removed on reasoning that did not hold, and the gap it left is still open. | Holding a live QR token does mean being in the room, and that part stands. But the case the window defended was called "self-correcting" when it is not: the victim is marked *present*, so nobody complains and nothing surfaces. | [Registration, and the window that was wrong to remove](#registration-and-the-window-that-was-wrong-to-remove) |
+| 16 | **One passkey per device**, via `excludeCredentials` carrying the whole class. | `UNIQUE(student_id)` gave one passkey per student and nothing gave one per device, so a single handset could collect a passkey for every unenrolled classmate and mark them present all term. Enforced by the authenticator, so it stops a phone and not a script. | [One phone, many roll numbers](#one-phone-many-roll-numbers) |
 | 10 | **Housekeeping runs behind the response** via `after()`, with no cron. | Both swept tables are self-limiting by query, so the deletes are tidying, not correctness — and have no business costing a student a round trip. One less thing that can silently stop running. | [The phone-changes panel](#the-phone-changes-panel) |
 | 11 | **RLS on with no policies.** Every server query uses the service role. | A leaked anon key then grants nothing at all, rather than whatever the policies happen to permit. | [Permissions](#permissions) |
 | 12 | **The roster is cached in memory for 30 seconds**, and any write clears it. | Read on nearly every request, changed a handful of times a term. Thirty seconds and not thirty minutes because several serverless instances cannot tell each other about a new student. | [Caching](#caching) |
@@ -544,25 +556,130 @@ into the grid; tap through from memory or a paper list. Every mark lands as `✎
 A date that already has a session is refused, and the existing one is opened
 instead.
 
-### Registration, and why there is no window
+### Registration, and the window that was wrong to remove
 
-A phone with no passkey is always offered registration. There used to be an
-admin-controlled window; it was removed deliberately.
+A phone with no passkey can be offered registration. There used to be an
+admin-controlled window; it was removed, and the reasoning for removing it was
+wrong. Both halves are recorded here because the mistake is more instructive than
+the fix.
 
-It only ever defended against somebody claiming an **unclaimed** roll number
-unilaterally, and that case is self-correcting: the real student is told the
-number is taken and the admin sorts it out. It gave no protection against the
-case that actually has a motive, because that needs no window at all. So the
-toggle, the timer, the countdown and the banner were machinery guarding a
-narrow, recoverable case, and they are gone.
+**What the README used to say:** the window "only ever defended against somebody
+claiming an **unclaimed** roll number unilaterally, and that case is
+self-correcting: the real student is told the number is taken and the admin sorts
+it out."
 
-What authorises registration instead is **presence**: creating a passkey
-requires a live QR token, which only exists on the projector in the room.
+**Why that is wrong:** the victim is marked **present**. They have no reason to
+complain. The attacker has no reason to complain. If the victim ever does try to
+enrol, they land in the approval queue looking exactly like an ordinary lost
+phone. Nobody is unhappy, so nothing surfaces — it is a stable state, not a
+self-correcting one. "Self-correcting" assumed the harm was visible to the person
+harmed, and it is not.
 
-What is left is honest about its limits. Within a class, anyone holding a live QR
-token can claim any roll number nobody has claimed yet. That is accepted: the
-alternative is enrollment requiring the admin's assent for each of 47 students.
-See **What this does not defend against** below.
+What authorises registration is **presence**: creating a passkey requires a live
+QR token, which only exists on the projector in the room. That part still holds,
+and it is why enrolling needs no admin and no email.
+
+### One phone, many roll numbers
+
+The hole that reasoning left open, found in production by cancelling a
+fingerprint prompt.
+
+Cancelling led to the enrolment form. That is not a slip so much as an
+unavoidable ambiguity — WebAuthn will not tell a page whether a passkey exists,
+so a cancelled prompt and an empty keychain are the same event — but this screen
+resolved the ambiguity by offering the form, which handed it to anybody. Enter a
+classmate's roll number and their passkey is created on your phone.
+
+**`UNIQUE(student_id)` guaranteed one passkey per student. Nothing guaranteed one
+passkey per device.** Reproduced before fixing, on one handset:
+
+```
+their own roll number registers                            ok
+MT2026008 claimed from the same phone                      ok
+MT2026020 claimed from the same phone                      ok
+MT2026026 claimed from the same phone                      ok
+MT2026028 claimed from the same phone                      ok
+five passkeys now exist, all on one device                 ok
+nothing is waiting in the approval queue                   ok
+```
+
+Then, with the attendance cleared and the keychain untouched — next week:
+
+```
+all five present, one device, nothing typed                ok
+```
+
+So it was not one roll number and not one class. One phone could hold a passkey
+for every student who had not enrolled yet and mark them present for the rest of
+the term, needing nothing from those students ever again.
+
+An edge test had asserted this **as a feature** — "one phone may register a
+second student … a shared family phone, or the admin's own phone". That is the
+second time in this project a test encoded a vulnerability as intended
+behaviour. Both times the test was written from the same reasoning as the code,
+which is exactly when a test is worth least.
+
+#### The fix, in three layers
+
+**1. The authenticator refuses.** `excludeCredentials` now carries *every*
+credential in the class, not only the roll number being claimed. A phone already
+holding any classmate's passkey cannot create a second one — it throws
+`InvalidStateError` before the server is involved. Verified against Chromium's
+real WebAuthn implementation, not only the software authenticator in the suites:
+
+```
+the exclusion list carries the whole class, not just the roll number asked for  ok
+a real authenticator refuses a second passkey on the same phone                 ok
+the keychain still holds exactly one credential                                 ok
+```
+
+This is enforced by the phone. A caller scripting WebAuthn by hand can drop the
+list, and the server cannot detect it: a platform authenticator reports no device
+identity by design, and the AAGUID names a model rather than a handset. So this
+stops a student with a phone, which is the threat here, and does not stop someone
+writing their own client.
+
+**2. The screen stops guessing.** A failed prompt now says "Not confirmed" and
+offers **Try again**. Enrolment is a separate, deliberate tap, and it is not
+offered at all when a local flag says this phone has already been enrolled. The
+flag is clearable, so it is an affordance rather than a control — its job is to
+stop a cancelled prompt from *handing over* the form.
+
+**3. The server queues cross-student claims.** Enrolling a roll number from a
+browser that already holds a session for a *different* student is never the
+innocent first-time case, whatever else it is. It goes to the approval queue with
+an audit line saying so, rather than being written. This catches the scripted
+caller from layer 1 — as long as it keeps its cookie.
+
+#### What is still open
+
+A caller with **no cookie, no real authenticator, and a roll number nobody has
+enrolled** can still claim it. Proved, deliberately, so it is not a surprise:
+
+```
+claiming a third roll number: 200 REGISTERED
+^ THIS IS THE RESIDUAL GAP
+```
+
+The same is true, without any scripting, of a **second physical device**: a
+laptop or an old phone with an empty keychain can enrol one unclaimed roll
+number.
+
+Only gating first-time enrolment closes this, which means the window that was
+deleted — now with a reason that actually holds. Two shapes of it:
+
+- **An enrolment window on the session.** Open it for the first class, watch the
+  count reach the roster size, close it. Later joiners then go through the
+  approval queue like anyone else. Cheap, and leaves one supervised window of
+  exposure.
+- **Approve every first enrolment.** No window at all, at the cost of roughly one
+  tap per student during the first class.
+
+Neither is implemented. Until one is, treat the first class as the moment that
+matters: **the enrolment list is worth checking against who was actually in the
+room**, because that is when every roll number is unclaimed and therefore
+claimable. `audit_log` holds every `PASSKEY_REGISTERED` with a timestamp and a
+device label for exactly that check.
 
 ### A student joins late
 
@@ -902,6 +1019,17 @@ A realistic relay takes 15–30 seconds, so **use the 10-second rotation for rea
 classes** — and project the QR large, because a fast rotation is unforgiving of
 a code nobody at the back can read. Beyond that, the count on the grid against
 the number of occupied seats is a better check than any cryptography.
+
+**Claiming a roll number nobody has enrolled.** A device with an empty keychain —
+a second phone, a laptop, or a script — can still enrol one unclaimed roll number
+while a session is live, and is then marked present as that student. One phone can
+no longer collect several, and a phone that has already enrolled cannot enrol
+another at all, but the first claim on an unclaimed number is not gated. See
+[One phone, many roll numbers](#one-phone-many-roll-numbers) for what was closed,
+what was not, and the two ways to close the rest. Until one of them is built, the
+**first class of the term is the exposure**, because that is when every roll
+number is unclaimed: check the enrolment list afterwards against who was in the
+room.
 
 ## How the security works
 

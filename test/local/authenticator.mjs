@@ -118,9 +118,15 @@ export function createAuthenticator() {
      * it throws InvalidStateError. Ignoring that here made the suite report
      * duplicate registrations succeeding when on a real phone they cannot.
      */
-    register(options, origin) {
+    /**
+     * `ignoreExclusions` models a caller who is not using a real authenticator
+     * at all — a script that drops excludeCredentials before calling create.
+     * The server cannot detect that, so the suites use it to prove the
+     * server-side checks hold on their own rather than leaning on the phone.
+     */
+    register(options, origin, { ignoreExclusions = false } = {}) {
       const rpId = options.rp.id
-      const excluded = (options.excludeCredentials ?? []).map((c) => c.id)
+      const excluded = ignoreExclusions ? [] : (options.excludeCredentials ?? []).map((c) => c.id)
       for (const id of excluded) {
         if (credentials.has(id)) {
           const err = new Error('credential already present on this authenticator')

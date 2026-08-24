@@ -87,6 +87,39 @@ export type CredentialRow = {
   last_used_at: string | null
 }
 
+/**
+ * Every credential the class holds, for excludeCredentials.
+ *
+ * Not just the roll number being claimed. WebAuthn refuses to tell a page
+ * whether a passkey exists — deliberately, since that would be an enumeration
+ * and tracking vector — so the page cannot enforce "one passkey per phone"
+ * itself. excludeCredentials can: the authenticator checks the list against
+ * what it already holds and throws InvalidStateError rather than creating a
+ * second key. Listing the whole class therefore makes a phone that already
+ * carries any student's passkey unable to enrol another.
+ *
+ * This is enforced by the phone, not by us. A caller scripting WebAuthn by hand
+ * can drop the list, and the server cannot tell — a platform authenticator
+ * reports no device identity by design, and the AAGUID names a model, not a
+ * handset. So this stops a student with a phone, which is the threat here, and
+ * does not stop someone writing their own client.
+ *
+ * The ids are opaque random bytes and reveal no roll numbers; the size of the
+ * list does reveal how many students have enrolled, which is not worth hiding
+ * from somebody already holding a live QR token. At 47 students the payload is
+ * a few kilobytes. A class in the thousands would want reconsidering, because
+ * CTAP2 limits how large this list can get.
+ */
+export async function allCredentials(): Promise<
+  { credential_id: string; transports: string[] | null }[]
+> {
+  const { data, error } = await db()
+    .from('student_credentials')
+    .select('credential_id, transports')
+  if (error) throw error
+  return data ?? []
+}
+
 export async function credentialById(credentialId: string): Promise<CredentialRow | null> {
   const { data, error } = await db()
     .from('student_credentials')

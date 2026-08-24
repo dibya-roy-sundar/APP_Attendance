@@ -47,7 +47,7 @@ export function phone(base) {
     },
 
     /** First time on this phone: claim a roll number and create a passkey. */
-    async register(sessionId, token, rollNo) {
+    async register(sessionId, token, rollNo, { ignoreExclusions = false } = {}) {
       const options = await post('/api/passkey/register/options', {
         s: sessionId,
         t: token,
@@ -56,7 +56,9 @@ export function phone(base) {
       if (options.status !== 200) return { stage: 'options', ...options }
       let attestation
       try {
-        attestation = authenticator.register(options.data.options, options.data.origin)
+        attestation = authenticator.register(options.data.options, options.data.origin, {
+          ignoreExclusions,
+        })
       } catch (err) {
         // A real authenticator refuses a second credential for a user it
         // already holds one for; the suites assert that rather than a 4xx.
@@ -75,11 +77,15 @@ export function phone(base) {
      * Every later class. `tamper` lets a suite prove the server checks rather
      * than assuming it: 'signature' forges one, 'challenge' substitutes another.
      */
-    async markPresent(sessionId, token, { tamper } = {}) {
+    async markPresent(sessionId, token, { tamper, credentialId } = {}) {
       const options = await post('/api/passkey/auth/options', { s: sessionId, t: token })
       if (options.status !== 200) return { stage: 'options', ...options }
 
-      let assertion = authenticator.authenticate(options.data.options, options.data.origin)
+      // credentialId picks which stored passkey signs. A real phone chooses by
+      // showing the user a list; a suite needs to say which one it means.
+      let assertion = authenticator.authenticate(options.data.options, options.data.origin, {
+        credentialId,
+      })
       if (!assertion) return { stage: 'no-passkey', status: 0, data: {} }
       if (tamper === 'signature') assertion = authenticator.forgeSignature(assertion)
 
