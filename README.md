@@ -5,9 +5,9 @@ period they choose — 5 to 300 seconds, 15 by default; students scan it with th
 phone and are marked present for that date. The instructor can download an
 `.xlsx` matching their existing sheet layout exactly.
 
-No email, no student passwords. Identity is a **passkey**: a private key in the
-phone's secure element, confirmed with a face or a fingerprint, which the OS
-carries to a new phone by itself. Nothing to reset when a student clears their
+No email, no student passwords. Identity is a **passkey**: a private key held by
+the phone's credential store, confirmed with a face or a fingerprint, which the
+OS carries to a new phone by itself. Nothing to reset when a student clears their
 browser data. The one case that still needs a person — a genuinely lost phone —
 goes through an approval queue rather than a reset button, for reasons under
 [Lost or wiped phone](#lost-or-wiped-phone).
@@ -186,7 +186,7 @@ flowchart TD
   gate -- no --> refused
   gate -- yes --> excl{"Does this phone already hold<br/>ANY classmate's passkey?"}
   excl -- "yes · InvalidStateError,<br/>the authenticator refuses" --> refused
-  excl -- no --> create["OS creates a keypair.<br/>The private half never leaves the phone."]
+  excl -- no --> create["OS creates a keypair.<br/>Only the public half is sent."]
   create --> verify["POST register/verify"]
   verify --> att{"Attestation, origin<br/>and RP ID all valid?"}
   att -- "no · BAD_ATTESTATION" --> refused
@@ -241,7 +241,7 @@ sequenceDiagram
   V->>P: INSERT challenge, purpose register, student_id set
   V-->>B: challenge and excludeCredentials
   B->>K: credentials.create
-  Note over K: keypair in the secure element,<br/>private half never leaves
+  Note over K: keypair in the credential store.<br/>Only the public half is sent.
   K-->>B: public key and attestation
   B->>V: POST register/verify
   V->>P: DELETE challenge RETURNING — single use
@@ -380,7 +380,7 @@ Every one was either measured or arrived at by breaking the previous version.
 |---|---|---|---|
 | 1 | **Postgres is the source of truth.** Excel is generated on demand, never written to at runtime. | A spreadsheet cannot be read concurrently by 47 phones, and a file that is both input and output has no answer for "which copy is right". | [Export](#export) |
 | 2 | **No auth library.** The admin is one password in an env var; both cookies are self-describing and HMAC-signed. | There is one admin and no sign-up, no reset, no roles beyond deputy. A library would add a dependency and a session table to solve problems this app does not have. | [Cookies and HTTPS](#cookies-and-https) |
-| 3 | **Identity is a passkey**, after a localStorage UUID and then an httpOnly cookie. | Both predecessors were bearer tokens — copyable, forwardable, and destroyable by Safari's 7-day cap. A passkey is a private key in the secure element that cannot be extracted. | [Why identity moved…](#why-identity-moved-from-localstorage-to-a-cookie-to-passkeys) |
+| 3 | **Identity is a passkey**, after a localStorage UUID and then an httpOnly cookie. | Both predecessors were bearer tokens — copyable, forwardable, and destroyable by Safari's 7-day cap. A passkey cannot be read by a page or handed to a friend, and using it needs the device unlock. | [Why identity moved…](#why-identity-moved-from-localstorage-to-a-cookie-to-passkeys) · [What "the key never leaves the phone" actually means](#what-the-key-never-leaves-the-phone-actually-means) |
 | 4 | **Two independent proofs to be marked present:** *who* is a signature, *where* is a live rotating token. | Neither substitutes for the other. A passkey off campus proves identity but not presence; a photographed QR proves presence but not identity. | [Identity](#identity) |
 | 5 | **Bearer tokens read, signatures write.** The `att_student` cookie can fetch `/me` and nothing else. | The cookie is copyable and a friend *can* paste it — accepted, because its whole power is reading one student's own percentage. Attendance always needs a fresh assertion. | [Identity](#identity) |
 | 6 | **One passkey per student, enforced by a unique index** rather than by checking first. | Postgres has no race window; check-then-insert does, and it let two of three simultaneous claims through when tested. | [Guarding the credentials](#guarding-the-credentials) |
@@ -925,9 +925,12 @@ item above:
 | New phone, same ecosystem | Syncs automatically |
 | Admin device resets | Gone for cookies, cleared data and same-ecosystem phones. A genuinely lost phone needs one approval. |
 
-And it is the first version that is not a bearer token: the private key is
-non-extractable and using it needs the device plus its biometric. Handing a
-friend your phone no longer marks you present.
+And it is the first version that is not a bearer token: no page can read the
+private key, a student cannot hand it over the way they could hand over a cookie,
+and using it needs the device unlock. See
+[What "the key never leaves the phone" actually means](#what-the-key-never-leaves-the-phone-actually-means)
+for the precise version of that claim, which is weaker than it is usually
+written.
 
 **Two things must both hold to be marked present, and neither substitutes for
 the other:**
@@ -1062,9 +1065,11 @@ IP checks would be pointless here — everyone is on the same campus wifi.
 
 ### Identity
 
-A **passkey**. The private key is generated in the phone's secure element, kept
-in the OS credential store, and cannot be extracted — so unlike every earlier
-version of this, identity is not a bearer token that can be copied or forwarded.
+A **passkey**. The private key is held in the phone's credential store, and no
+web page can read it — so unlike every earlier version of this, identity is not a
+bearer token that can be copied or forwarded. What that does and does not
+guarantee is set out in
+[What "the key never leaves the phone" actually means](#what-the-key-never-leaves-the-phone-actually-means).
 
 Marking present needs two independent things, and neither substitutes for the
 other:
@@ -1079,6 +1084,84 @@ read without another biometric prompt. It cannot mark anybody present.
 A roll number from the client is trusted exactly once, at registration, and only
 when accompanied by a live token. See **Why identity moved from localStorage, to
 a cookie, to passkeys** above for what came before and why each step failed.
+
+### What "the key never leaves the phone" actually means
+
+This README said, in seven places, that the private key is generated in the
+secure element and cannot be extracted. That is the usual phrasing, and it is
+wrong for the kind of passkey nearly every student will have.
+
+**Device-bound** passkeys and hardware security keys are genuinely fused to one
+piece of hardware. **Synced** passkeys — Google Password Manager, iCloud
+Keychain — are not, and cannot be: a key that turns up on your new phone by
+itself was never locked to the old one's silicon. That syncing is exactly the
+property this design was chosen for, so the strong claim and the useful behaviour
+were never compatible.
+
+What actually holds for a synced passkey, and what this app relies on:
+
+- **No web page can read it.** There is no API that returns private key material,
+  so a compromised or hostile page cannot lift it.
+- **A student cannot hand it over.** Not the way they could paste a cookie or read
+  out a localStorage UUID. It moves only inside the provider's end-to-end
+  encrypted sync, between devices signed into that student's own account.
+- **Using it needs the device unlock.** `userVerification: 'required'`, so a face,
+  a fingerprint or a passcode every time.
+
+Those three are what make a passkey not a bearer token, and all three survive the
+correction. What does not survive is "it physically cannot leave this handset".
+
+### Where a passkey actually lives, and why that is two answers
+
+"In the OS credential store" and "in your Google account" both get said, and they
+sound contradictory. They answer different questions.
+
+| | |
+|---|---|
+| **OS credential store** | *Who can reach it on this device.* A system store, read through the OS API — Android Credential Manager, iOS AutoFill — not browser storage. So clearing site data does nothing to it, Chrome and Samsung Internet and an in-app WebView all see the same passkey, and it is not tied to a browser profile. |
+| **Your Google or Apple account** | *How it reaches your other devices.* The credential provider keeps an end-to-end encrypted copy synced through the account. The provider stores ciphertext; it cannot use the key. |
+
+On Android the provider is Google Password Manager by default, but it is a
+replaceable role — 1Password, Samsung Pass and others can hold it. On iOS it is
+iCloud Keychain, similarly replaceable.
+
+**The consequence for this app.** `excludeCredentials` is matched against what the
+*provider* holds, and the provider spans every device signed into that account.
+So the rule enforced by [One phone, many roll numbers](#one-phone-many-roll-numbers)
+is really **one passkey per keychain**, not one per handset — stronger than
+claimed, because a student's second phone cannot enrol a classmate either. The
+flip side is that a shared account is a shared keychain.
+
+That last paragraph is reasoning from the specification, not something the suites
+can prove: the virtual authenticators used in testing have no notion of an
+account to sync through. It wants confirming on real hardware.
+
+### What a student sees in their password manager
+
+Not the credential id — that stays under the hood. What shows up is what
+`register/options` sends:
+
+| Field | Value | Where |
+|---|---|---|
+| Site | `Soft Skills Attendance` | `RP_NAME`, `passkey.ts` |
+| Username | their roll number | `userName: student.roll_no` |
+| Display name | their name | `userDisplayName: student.name` |
+
+So the roll number is the human-visible label. Worth knowing before telling 47
+students to look for something in their passwords list.
+
+**The credential id is not a secret** and does not need to be one. It is an
+identifier; without the private key it cannot produce a signature, and it is
+per-relying-party, so it cannot correlate anybody across sites. This app now
+publishes all of them to any caller holding a live QR token, which is what makes
+one-passkey-per-keychain enforceable at all.
+
+One live weakness in the same response, worth fixing rather than defending:
+`register/options` returns `needsApproval`, which tells the caller whether the
+roll number they typed has already enrolled. That is an enumeration oracle, and
+given the [residual gap](#what-is-still-open) it points straight at the roll
+numbers that are still claimable. It exists only so the screen can warn before
+the biometric prompt rather than after.
 
 ### Cookies and HTTPS
 
