@@ -45,10 +45,12 @@ create table if not exists attendance (
 
 -- ── passkeys ──────────────────────────────────────────────────────────────
 --
--- One row per credential, and deliberately NOT unique on student_id: a student
--- may register one passkey per device. If it were one-per-student, somebody
--- moving from iPhone to Android would need an admin to clear the old one —
--- which is the exact problem passkeys were adopted to remove.
+-- One row per credential. The unique index below holds it to one per student;
+-- the reasoning is there, next to the index that enforces it.
+--
+-- This was first built one-to-many, so that moving from iPhone to Android
+-- needed nobody's permission. See README, "Lost or wiped phone", for the attack
+-- that made that untenable.
 create table if not exists student_credentials (
   id            uuid primary key default gen_random_uuid(),
   student_id    uuid not null references students(id) on delete cascade,
