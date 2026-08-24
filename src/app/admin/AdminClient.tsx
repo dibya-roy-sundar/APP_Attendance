@@ -365,6 +365,29 @@ export function AdminClient() {
     if (ok) await load(selectedId);
   }
 
+  /**
+   * Frees a claimed roll number, for a genuinely lost phone.
+   *
+   * A claimed roll number stays claimed — otherwise anyone in the room could
+   * add a passkey to an absent classmate and mark them present indefinitely.
+   * This is the one door out, and it is deliberately the admin's.
+   */
+  async function removePasskeys(student: Student) {
+    setMenuFor(null);
+    const { ok, data } = await post("/api/passkey/remove", {
+      studentId: student.studentId,
+    });
+    const err = (data as { error?: string }).error;
+    setNotice(
+      ok
+        ? `${student.name} can set up a new phone on the next scan. Their attendance is unchanged.`
+        : err === "NO_PASSKEY"
+          ? `${student.name} has no passkey to remove.`
+          : "Could not remove that passkey.",
+    );
+    if (ok) await load(selectedId);
+  }
+
   if (!roster) {
     return (
       <main className="flex min-h-dvh items-center justify-center p-6">
@@ -552,9 +575,11 @@ export function AdminClient() {
                 {menuFor === s.studentId && (
                   <RowMenu
                     student={s}
+                    role={roster.role}
                     busy={busy}
                     onClose={() => setMenuFor(null)}
                     onUnmark={() => requestUnmark(s)}
+                    onRemovePasskeys={() => void removePasskeys(s)}
                   />
                 )}
               </li>
@@ -662,8 +687,10 @@ export function AdminClient() {
                   {menuFor === s.studentId && (
                     <RowMenu
                       student={s}
+                      role={roster.role}
                       busy={busy}
                       onClose={() => setMenuFor(null)}
+                      onRemovePasskeys={() => void removePasskeys(s)}
                     />
                   )}
                 </li>
@@ -722,14 +749,18 @@ function SelfBadge() {
  */
 function RowMenu({
   student,
+  role,
   busy,
   onClose,
   onUnmark,
+  onRemovePasskeys,
 }: {
   student: Student;
+  role: "primary" | "deputy";
   busy: boolean;
   onClose: () => void;
   onUnmark?: () => void;
+  onRemovePasskeys: () => void;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-3 bg-slate-50 px-4 py-3 pl-11 text-sm dark:bg-slate-900">
@@ -742,19 +773,32 @@ function RowMenu({
           Unmark
         </button>
       )}
-      {/*
-        "Reset device" is gone, and so is "Register this phone".
-        Device resets existed because identity was a UUID in this browser: lose
-        it and only an admin could unstick you. A passkey lives in the phone's
-        OS keychain, so a student re-links themselves by scanning and touching
-        the sensor — no admin, and nothing here to reset. The old handlers are
-        preserved in docs/superseded/AdminClient.with-device-reset.tsx.
-      */}
       <span className="inline-flex min-h-11 items-center px-1 text-slate-500 dark:text-slate-400">
         {student.enrolled
           ? `${student.passkeys} passkey${student.passkeys === 1 ? "" : "s"}`
           : "No passkey yet"}
       </span>
+      {/*
+        Only needed for a genuinely lost phone. Within one ecosystem a passkey
+        follows a student to a new handset by itself, and clearing cookies or
+        site data costs them nothing — so this should be rare. It exists because
+        a claimed roll number has to stay claimed: without it, anyone in the
+        room could add a passkey to an absent classmate's roll number and mark
+        them present every week.
+      */}
+      {role === "primary" ? (
+        <button
+          onClick={onRemovePasskeys}
+          disabled={busy || !student.enrolled}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-40 dark:border-slate-700"
+        >
+          Remove passkeys
+        </button>
+      ) : (
+        <span className="text-xs text-slate-500 dark:text-slate-400">
+          Only the admin can remove a passkey.
+        </span>
+      )}
       <button
         onClick={onClose}
         className="inline-flex min-h-11 items-center px-1 text-slate-500 dark:text-slate-400"

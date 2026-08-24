@@ -3,13 +3,16 @@ import { isSecureRequest } from '@/lib/admin'
 import { audit, getSessionById, getStudentById } from '@/lib/data'
 import {
   consumeChallenge,
+  credentialsForStudent,
+  recordRequest,
   deviceLabelFrom,
   expectedOrigin,
   rpID,
   saveCredential,
 } from '@/lib/passkey'
 import { markPresentForStudent } from '@/lib/mark'
-import { setStudentSession } from '@/lib/student-session'
+import { readStudentSession, setStudentSession } from '@/lib/student-session'
+import { callerKey } from '@/lib/throttle'
 import { verifyToken } from '@/lib/token'
 import { verifyRegistrationResponse } from '@simplewebauthn/server'
 
@@ -45,6 +48,8 @@ export async function POST(req: Request) {
   const consumed = await consumeChallenge(challenge, 'register')
   if (!consumed || !consumed.studentId) return fail('CHALLENGE_EXPIRED', 409)
 
+  const ownSession = readStudentSession(req) === consumed.studentId
+
   let verification
   try {
     verification = await verifyRegistrationResponse({
@@ -59,21 +64,64 @@ export async function POST(req: Request) {
   }
   if (!verification.verified || !verification.registrationInfo) return fail('BAD_ATTESTATION', 400)
 
+  const student = await getStudentById(consumed.studentId)
+  if (!student) return fail('UNKNOWN_ROLL', 404)
+
   const { credential } = verification.registrationInfo
-  const saved = await saveCredential({
-    studentId: consumed.studentId,
+  const shape = {
     credentialId: credential.id,
     publicKey: Buffer.from(credential.publicKey).toString('base64url'),
     counter: credential.counter,
     transports: (credential.transports as string[] | undefined) ?? null,
     deviceLabel: deviceLabelFrom(req.headers.get('user-agent')),
-  })
-  // The credential already belongs to somebody. Not necessarily an attack — a
-  // double-submitted form does this — so it is reported plainly.
-  if (saved.conflict) return fail('PASSKEY_ALREADY_REGISTERED', 409)
+  }
 
-  const student = await getStudentById(consumed.studentId)
-  if (!student) return fail('UNKNOWN_ROLL', 404)
+  /*
+   * The student already holds a passkey, and this request cannot prove it is
+   * them. Not necessarily an attack — a lost phone looks identical from here —
+   * so the claim is queued for the admin rather than thrown away. Queuing it
+   * is also what makes an attempted proxy visible: a request for a student who
+   * never changed phone is exactly that, stamped with a time and a device.
+   *
+   * Nothing is marked present. That is the point.
+   */
+  if (!ownSession) {
+    const held = await credentialsForStudent(consumed.studentId)
+    if (held.length > 0) {
+      await recordRequest({
+        studentId: consumed.studentId,
+        ...shape,
+        sessionId: session.id,
+        caller: callerKey(req),
+      })
+      await audit({
+        action: 'PASSKEY_REQUESTED',
+        studentId: consumed.studentId,
+        sessionId: session.id,
+        actor: 'student',
+        reason: `claim from ${shape.deviceLabel ?? 'unknown device'}, awaiting approval`,
+      })
+      return fail('NEEDS_APPROVAL', 409, { name: student.name })
+    }
+  }
+
+  /*
+   * Otherwise this is a first claim, and the unique index on
+   * student_credentials(student_id) is what settles a race: check-then-insert
+   * has a window in which three simultaneous claims all pass, a unique
+   * constraint has none. A violation here means somebody else won by
+   * microseconds, so their claim becomes a request too.
+   */
+  const saved = await saveCredential({ studentId: consumed.studentId, ...shape })
+  if (saved.conflict) {
+    await recordRequest({
+      studentId: consumed.studentId,
+      ...shape,
+      sessionId: session.id,
+      caller: callerKey(req),
+    })
+    return fail('NEEDS_APPROVAL', 409, { name: student.name })
+  }
 
   await markPresentForStudent(session.id, student.id, 'scan')
   await audit({

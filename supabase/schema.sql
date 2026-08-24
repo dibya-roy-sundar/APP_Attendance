@@ -65,7 +65,16 @@ create table if not exists student_credentials (
   last_used_at  timestamptz
 );
 
-create index if not exists student_credentials_student_idx
+-- One credential per student, enforced by Postgres rather than by remembering
+-- to check. It is also what makes the race safe: check-then-insert has a window
+-- in which three simultaneous claims all pass, a unique index has none.
+--
+-- Being in the room with a live QR code is enough to claim an *unclaimed* roll
+-- number. It is never enough to claim one twice — otherwise anybody present
+-- could attach a passkey to an absent classmate and mark them present for the
+-- rest of the term. A second claim becomes a row in passkey_requests for the
+-- admin to judge.
+create unique index if not exists student_credentials_one_per_student
   on student_credentials (student_id);
 
 -- Challenges are single-use and short-lived. Held server-side so a challenge
@@ -84,6 +93,40 @@ create table if not exists webauthn_challenges (
 
 create index if not exists webauthn_challenges_expiry_idx
   on webauthn_challenges (expires_at);
+
+-- A claim on a roll number that already has a passkey, awaiting a decision.
+--
+-- Refusing outright is correct but blind — the admin never learns it happened.
+-- A lost phone and an attempted proxy arrive through the same door, and the
+-- admin decides which is which. Every rejected claim is then evidence, stamped
+-- with a time and a device.
+--
+-- The credential is fully verified before it lands here: signature, origin and
+-- challenge are all checked, so approving is a question of trust, never of
+-- validity. Nothing in this table can mark attendance.
+create table if not exists passkey_requests (
+  id            uuid primary key default gen_random_uuid(),
+  student_id    uuid not null references students(id) on delete cascade,
+  credential_id text not null unique,
+  public_key    text not null,
+  counter       bigint not null default 0,
+  transports    text[],
+  device_label  text,
+  requested_at  timestamptz not null default now(),
+  expires_at    timestamptz not null,
+  session_id    uuid references sessions(id) on delete set null,
+  caller        text,
+  decided_at    timestamptz,
+  decision      text check (decision in ('approved', 'rejected'))
+);
+
+-- At most one pending request per student, so one roll number cannot flood the
+-- queue. A fresh claim replaces the pending one.
+create unique index if not exists passkey_requests_one_pending_per_student
+  on passkey_requests (student_id) where decided_at is null;
+
+create index if not exists passkey_requests_pending_idx
+  on passkey_requests (expires_at) where decided_at is null;
 
 -- ── admin ─────────────────────────────────────────────────────────────────
 
@@ -134,6 +177,7 @@ alter table sessions            enable row level security;
 alter table attendance          enable row level security;
 alter table student_credentials enable row level security;
 alter table webauthn_challenges enable row level security;
+alter table passkey_requests    enable row level security;
 alter table audit_log           enable row level security;
 alter table admin_grants        enable row level security;
 alter table login_attempts      enable row level security;

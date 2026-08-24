@@ -2,6 +2,7 @@ import { fail, ok, readJson } from '@/lib/api'
 import { MAX_ROLL_LENGTH, getSessionById, getStudentByRollNo } from '@/lib/data'
 import { RP_NAME, credentialsForStudent, expectedOrigin, pruneChallenges, rpID, storeChallenge } from '@/lib/passkey'
 import { verifyToken } from '@/lib/token'
+import { readStudentSession } from '@/lib/student-session'
 import { generateRegistrationOptions } from '@simplewebauthn/server'
 
 /**
@@ -32,9 +33,35 @@ export async function POST(req: Request) {
   const student = await getStudentByRollNo(rollNo)
   if (!student) return fail('UNKNOWN_ROLL', 404)
 
-  await pruneChallenges()
-
   const existing = await credentialsForStudent(student.id)
+
+  /*
+   * A roll number that already has a passkey cannot be claimed again by a
+   * stranger.
+   *
+   * Being in the room with a live token is enough to claim an *unclaimed* roll
+   * number — that case is self-correcting, because the real student is told it
+   * is taken and the admin clears it. It is nowhere near enough to add a second
+   * passkey to a student who already has one: that would let anybody in the
+   * room mark an absent classmate present, that class and silently every class
+   * afterwards. The device-binding scheme refused this through a unique column;
+   * making credentials one-to-many removed the protection, and this puts it
+   * back.
+   *
+   * The exception is proving you are already that student, by holding a session
+   * this server issued for them — which only a verified passkey assertion can
+   * produce. That covers adding a second device while you still have the first.
+   * A genuinely lost phone needs the admin to remove the old passkey, which is
+   * rare: within one ecosystem a passkey follows you to a new phone by itself.
+   */
+  // Options are issued either way. A roll number that already has a passkey
+  // still gets a challenge, because the claim has to be *verified* before it can
+  // be judged — an unverified request would be worthless as evidence, and would
+  // let anyone queue a claim for anyone without holding a phone at all. Whether
+  // it becomes a credential or a request is decided in register/verify.
+  const replacing = existing.length > 0 && readStudentSession(req) !== student.id
+
+  await pruneChallenges()
   const options = await generateRegistrationOptions({
     rpName: RP_NAME,
     rpID: rpID(req),
@@ -59,7 +86,14 @@ export async function POST(req: Request) {
   })
 
   await storeChallenge(options.challenge, 'register', student.id)
-  return ok({ options, origin: expectedOrigin(req), name: student.name, rollNo: student.roll_no })
+  return ok({
+    options,
+    origin: expectedOrigin(req),
+    name: student.name,
+    rollNo: student.roll_no,
+    // Lets the screen warn before the biometric prompt, rather than after.
+    needsApproval: replacing,
+  })
 }
 
 export const dynamic = 'force-dynamic'

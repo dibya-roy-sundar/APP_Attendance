@@ -140,7 +140,7 @@ async function adminJourney(engineName, engine, phone) {
  * other that a purged localStorage still recovered from a cookie. Neither
  * matters now, and proving that is the first assertion below.
  */
-async function passkeyJourney(sessionInfo) {
+async function passkeyJourney(sessionInfo, adminCookie) {
   console.log(`\n── Chromium: registering and signing in with a passkey ──`)
   const browser = await chromium.launch()
   try {
@@ -226,14 +226,46 @@ async function passkeyJourney(sessionInfo) {
     await page.waitForSelector('text=Set up this phone', { timeout: 30000 })
     check('a replacement phone is offered set-up, not an error', true)
 
-    // And recovers itself: a second passkey, no admin, no reset.
+    // A claimed roll number stays claimed, so even the real student cannot
+    // re-claim it from a phone the server cannot recognise. That is the trade:
+    // without it, anyone in the room could add a passkey to an absent
+    // classmate's roll number and mark them present every week.
     await page.getByLabel('Roll number').fill(student.roll_no)
     await page.getByRole('button', { name: /Create passkey and mark present/ }).click()
-    await page.getByText('Present', { exact: true }).waitFor({ timeout: 30000 })
-    check('the student recovers with no admin involved', true)
+    await page.getByText('Waiting for approval').waitFor({ timeout: 30000 })
+    check('a replacement phone is queued, not silently refused', true)
+    const waiting = (await page.locator('body').innerText()).replace(/\s+/g, ' ')
     check(
-      'they now hold two passkeys, the lost one and the new',
-      (await count('student_credentials', `student_id=eq.${student.id}`)) === 2
+      'and the student is told plainly they are not marked yet',
+      /not been marked present yet/.test(waiting),
+      waiting.slice(0, 120)
+    )
+    check(
+      'nothing was recorded for them by that phone',
+      (await count('attendance', `session_id=eq.${id}&student_id=eq.${student.id}`)) === 1
+    )
+
+    // The admin approves it, which replaces the lost passkey rather than
+    // adding to it.
+    const queued = await (
+      await fetch(`${BASE}/api/passkey/requests`, { headers: { cookie: adminCookie } })
+    ).json()
+    const mine = queued.requests.find((r) => r.rollNo === student.roll_no)
+    check('the claim appears in the admin queue', Boolean(mine), JSON.stringify(queued).slice(0, 120))
+    const decided = await fetch(`${BASE}/api/passkey/requests/decide`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ requestId: mine.id, approve: true, reason: 'lost phone' }),
+    })
+    check('the admin approves it', decided.status === 200, `${decided.status}`)
+
+    await page.goto(url(), { waitUntil: 'networkidle' })
+    await page.getByRole('button', { name: 'Mark me present' }).click()
+    await page.getByText('Present', { exact: true }).waitFor({ timeout: 30000 })
+    check('then the replacement phone marks present with one tap', true)
+    check(
+      'approval replaced rather than added — still one passkey',
+      (await count('student_credentials', `student_id=eq.${student.id}`)) === 1
     )
     check(
       'and their attendance was never touched',
@@ -274,13 +306,11 @@ async function passkeyJourney(sessionInfo) {
     })
     check('a read-only session cannot mark anybody present', attempt.status >= 400, `${attempt.status}`)
 
-    // The admin grid should show the count, since that is how a phone change is
-    // told apart from a problem.
-    const gridPasskeys = (await select(
-      'student_credentials',
-      `select=id&student_id=eq.${student.id}`
-    )).length
-    check('the roster can report more than one passkey', gridPasskeys === 2)
+    // The count is what tells a phone change apart from a problem.
+    check(
+      'the roster reports the passkey count',
+      (await select('student_credentials', `select=id&student_id=eq.${student.id}`)).length === 1
+    )
   } finally {
     await browser.close()
   }
@@ -313,7 +343,7 @@ async function main() {
   })
   const live = await one('sessions', 'select=id,secret,window_seconds&order=opened_at.desc&limit=1')
 
-  await passkeyJourney(live)
+  await passkeyJourney(live, jar)
 
   await cleanSlate()
 

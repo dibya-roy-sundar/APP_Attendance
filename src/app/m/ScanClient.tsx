@@ -32,6 +32,7 @@ type Result =
   | { kind: "expired" }
   | { kind: "offline" }
   | { kind: "unsupported" }
+  | { kind: "awaitingApproval"; name: string }
   | { kind: "error"; message: string };
 
 const MESSAGES: Record<string, string> = {
@@ -46,6 +47,8 @@ const MESSAGES: Record<string, string> = {
     "This passkey is not registered here any more. Enter your roll number to set it up again.",
   PASSKEY_ALREADY_REGISTERED:
     "That passkey is already registered. Just tap “Mark me present”.",
+  ALREADY_REGISTERED:
+    "That roll number is already set up on a phone. If it is this phone, tap “Already set up — try again”.",
 };
 
 function formatDate(d: string) {
@@ -210,6 +213,12 @@ export function ScanClient({
           name: done.data.name,
           classDate: done.data.classDate,
         });
+      } else if (done.data.error === "NEEDS_APPROVAL") {
+        // That roll number already has a passkey. The claim is queued rather
+        // than thrown away, because a lost phone and somebody else's phone look
+        // identical from the server's side.
+        setRollNo("");
+        setResult({ kind: "awaitingApproval", name: done.data.name ?? "" });
       } else {
         setResult({
           kind: "register",
@@ -302,6 +311,22 @@ export function ScanClient({
           >
             Already set up — try again
           </button>
+          <HomeLink />
+        </Card>
+      )}
+
+      {result.kind === "awaitingApproval" && (
+        <Card tone="warn">
+          <h1 className="text-xl font-semibold">Waiting for approval</h1>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            {result.name} already has a passkey on another phone, so the admin
+            has to approve this one. Ask them to check{" "}
+            <strong>More → Phone changes</strong> — they can approve it now and
+            you can tap again, or simply mark you present by hand today.
+          </p>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            You have not been marked present yet.
+          </p>
           <HomeLink />
         </Card>
       )}

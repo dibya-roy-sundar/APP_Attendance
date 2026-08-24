@@ -236,24 +236,65 @@ async function main() {
   const unknownRoll = await phone(BASE).register(session.id, t, 'MT9999999')
   check('unknown roll number → UNKNOWN_ROLL', unknownRoll.data?.error === 'UNKNOWN_ROLL')
 
-  // A second phone may register for the same student — that is the whole point
-  // of one-to-many credentials, and what removed the admin device reset.
-  const phoneA2 = phone(BASE)
-  const second = await phoneA2.register(session.id, t, rollA)
+  // A claimed roll number stays claimed. Being in the room is enough to claim
+  // an unclaimed one; it is not enough to add a passkey to a student who
+  // already has one, or anybody present could mark an absent classmate present
+  // for the rest of the term.
+  const stranger = phone(BASE)
+  const stolen = await stranger.register(session.id, t, rollA)
   check(
-    'the same student can register a second phone, with no admin involved',
-    second.data?.status === 'REGISTERED',
-    JSON.stringify(second.data)
+    "a stranger's phone cannot take over a roll number that is already set up",
+    stolen.status === 409 && stolen.data?.error === 'NEEDS_APPROVAL',
+    JSON.stringify(stolen.data)
   )
-  check('both credentials are stored', (await count('student_credentials')) === 2)
+  check('no second credential was written', (await count('student_credentials')) === 1)
   check(
-    'and still just one attendance row for that student',
+    'and nobody was marked present by it',
     (await count('attendance', `session_id=eq.${session.id}`)) === 1
   )
+  // The attempt is kept, which is the point: a claim for a student who never
+  // changed phone is an attempted proxy with a time and a device on it.
+  check('the attempt is queued for the admin', (await count('passkey_requests')) === 1)
+  const queued = await api('/api/passkey/requests', { cookie: admin })
   check(
-    'the second phone signs in on its own passkey',
-    (await phoneA2.markPresent(session.id, tokenFor(secret, session.id, nowWindow())))
-      .data?.rollNo === rollA
+    'and the queue names the student and the device',
+    queued.data?.requests?.[0]?.rollNo === rollA,
+    JSON.stringify(queued.data).slice(0, 120)
+  )
+  check(
+    'and flags that they are already marked today',
+    queued.data?.requests?.[0]?.markedToday === true
+  )
+  const refused = await api('/api/passkey/requests/decide', {
+    method: 'POST',
+    body: { requestId: queued.data.requests[0].id, approve: false, reason: 'not a phone change' },
+    cookie: admin,
+  })
+  check('the admin can refuse it', refused.status === 200, JSON.stringify(refused.data))
+  check('the original passkey is untouched', (await count('student_credentials')) === 1)
+  check(
+    'the refusal is recorded against them',
+    (await one('audit_log', `select=action&action=eq.PASSKEY_REJECTED&order=id.desc&limit=1`)) !==
+      undefined
+  )
+  check(
+    "and the stranger's phone still cannot sign in as them",
+    (await stranger.markPresent(session.id, tokenFor(secret, session.id, nowWindow())))
+      .data?.error === 'UNKNOWN_PASSKEY'
+  )
+
+  // The real student adding a second device proves they are already that
+  // student, by carrying a session only a verified assertion of theirs can
+  // produce. Same request, different outcome.
+  const ownSecond = await api('/api/passkey/register/options', {
+    method: 'POST',
+    body: { s: session.id, t, rollNo: rollA },
+    cookie: phoneA.cookie ?? '',
+  })
+  check(
+    'the real student may add a second device, holding their own session',
+    ownSecond.status === 200 && typeof ownSecond.data?.options?.challenge === 'string',
+    `${ownSecond.status} ${JSON.stringify(ownSecond.data).slice(0, 80)}`
   )
 
   // ── token rotation ────────────────────────────────────────────────────────
@@ -524,26 +565,70 @@ async function main() {
   const strandedRead = await histPhone.record()
   check('the lost phone can no longer read their record', strandedRead.status === 404)
 
+  // With the passkey gone and no session, even the real student cannot
+  // re-register: the server cannot tell them from anybody else in the room.
+  // That is the trade the security rule buys, and it is why the admin door
+  // exists.
   const replacement = phone(BASE)
-  const recovered = await replacement.register(
+  const blocked = await replacement.register(
     session.id,
     tokenFor(secret, session.id, nowWindow()),
     histStudent.rollNo
   )
   check(
-    'a replacement phone registers itself, with no admin and no reset',
-    recovered.data?.status === 'REGISTERED',
-    JSON.stringify(recovered.data)
+    'a replacement phone alone cannot re-claim the roll number',
+    blocked.data?.error === 'NEEDS_APPROVAL',
+    JSON.stringify(blocked.data)
   )
   check(
-    'attendance is untouched by the change of phone',
+    'and nothing was marked for them by it',
+    (await count('attendance', `student_id=eq.${histStudent.studentId}`)) === rowsBefore
+  )
+
+  // The real recovery path: their claim is in the queue, and the admin approves
+  // it. No deletion, no window in which the roll number is free for anybody.
+  const theirs = await api('/api/passkey/requests', { cookie: admin })
+  const mine = theirs.data.requests.find((r) => r.rollNo === histStudent.rollNo)
+  check('their claim is waiting', Boolean(mine), JSON.stringify(theirs.data).slice(0, 120))
+  // The flag is the fact the admin judges on, so assert it reflects reality
+  // rather than a hardcoded expectation: this student was marked earlier in the
+  // suite, so it must read true.
+  const markedNow =
+    (await count(
+      'attendance',
+      `session_id=eq.${session.id}&student_id=eq.${histStudent.studentId}`
+    )) > 0
+  check(
+    'the queue reports their marked-today state correctly',
+    mine?.markedToday === markedNow,
+    `flag ${mine?.markedToday} vs actual ${markedNow}`
+  )
+  const approved = await api('/api/passkey/requests/decide', {
+    method: 'POST',
+    body: { requestId: mine.id, approve: true, reason: 'lost phone' },
+    cookie: admin,
+  })
+  check('the admin approves it', approved.status === 200, JSON.stringify(approved.data))
+  check(
+    'approval replaces rather than adds — still one passkey',
+    (await count('student_credentials', `student_id=eq.${histStudent.studentId}`)) === 1
+  )
+  check(
+    'the new phone can now mark them present',
+    (await replacement.markPresent(session.id, tokenFor(secret, session.id, nowWindow())))
+      .data?.rollNo === histStudent.rollNo
+  )
+  check(
+    'and the approval is attributed to the admin',
+    (await one('audit_log', `select=actor&action=eq.PASSKEY_APPROVED&order=id.desc&limit=1`))
+      ?.actor === 'primary'
+  )
+  check(
+    'attendance survived the whole thing',
     (await count('attendance', `student_id=eq.${histStudent.studentId}`)) === rowsBefore,
     `${await count('attendance', `student_id=eq.${histStudent.studentId}`)} of ${rowsBefore}`
   )
-  check(
-    'the student now holds two credentials, the old one and the new',
-    (await count('student_credentials', `student_id=eq.${histStudent.studentId}`)) === 2
-  )
+
   const passkeyLog = await one(
     'audit_log',
     `select=reason,actor&action=eq.PASSKEY_REGISTERED&student_id=eq.${histStudent.studentId}&order=id.desc&limit=1`

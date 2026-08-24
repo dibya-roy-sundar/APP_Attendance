@@ -4,6 +4,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { useState } from "react";
 import { AccessPanel } from "./AccessPanel";
 import { AddStudentPanel } from "./AddStudentPanel";
+import { RequestsPanel } from "./RequestsPanel";
 import { ExportPanel } from "./ExportPanel";
 import {
   DEFAULT_DURATION,
@@ -75,14 +76,28 @@ export function Controls({
   onRosterChanged,
 }: Props) {
   const [panel, setPanel] = useState<
-    "none" | "start" | "live" | "more" | "export" | "access" | "students"
+    | "none"
+    | "start"
+    | "live"
+    | "more"
+    | "export"
+    | "access"
+    | "students"
+    | "requests"
   >("none");
   const [duration, setDuration] = useState(DEFAULT_DURATION);
   const [rotation, setRotation] = useState(DEFAULT_ROTATION);
   const [backdate, setBackdate] = useState("");
   const todaySession = sessions.find((s) => s.classDate === today);
   const toggle = (
-    p: "start" | "live" | "more" | "export" | "access" | "students",
+    p:
+      | "start"
+      | "live"
+      | "more"
+      | "export"
+      | "access"
+      | "students"
+      | "requests",
   ) => setPanel((v) => (v === p ? "none" : p));
 
   return (
@@ -224,6 +239,17 @@ export function Controls({
         </Panel>
       )}
 
+      {panel === "requests" && (
+        <Panel>
+          <RequestsPanel
+            isPrimary={isPrimary}
+            onDecided={(message) => {
+              onRosterChanged(message);
+            }}
+          />
+        </Panel>
+      )}
+
       {panel === "students" && (
         <Panel>
           <AddStudentPanel
@@ -259,6 +285,25 @@ export function Controls({
               </button>
             </div>
           )}
+
+          {/*
+            Visible to a deputy too: somebody covering the class needs to see
+            that a student is stuck, even though only the instructor decides.
+          */}
+          <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-4 dark:border-slate-800">
+            <span className="text-sm">
+              Phone changes
+              <span className="block text-xs text-slate-500 dark:text-slate-400">
+                Students asking to move their passkey to a new phone.
+              </span>
+            </span>
+            <button
+              onClick={() => toggle("requests")}
+              className="min-h-11 shrink-0 rounded-lg border border-slate-300 px-3 text-sm dark:border-slate-700"
+            >
+              Review
+            </button>
+          </div>
 
           {isPrimary && (
             <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-4 dark:border-slate-800">

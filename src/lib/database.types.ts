@@ -49,6 +49,22 @@ export type StudentCredentialRow = {
   last_used_at: string | null
 }
 
+export type PasskeyRequestRow = {
+  id: string
+  student_id: string
+  credential_id: string
+  public_key: string
+  counter: number
+  transports: string[] | null
+  device_label: string | null
+  requested_at: string
+  expires_at: string
+  session_id: string | null
+  caller: string | null
+  decided_at: string | null
+  decision: 'approved' | 'rejected' | null
+}
+
 export type WebAuthnChallengeRow = {
   challenge: string
   purpose: 'register' | 'authenticate'
@@ -81,6 +97,9 @@ export type AuditAction =
   | 'ADD_STUDENT'
   | 'PASSKEY_REGISTERED'
   | 'PASSKEY_REMOVED'
+  | 'PASSKEY_REQUESTED'
+  | 'PASSKEY_APPROVED'
+  | 'PASSKEY_REJECTED'
   /*
    * Superseded, and no longer written by anything. Kept out of the union on
    * purpose: with no data to preserve, the schema was rebuilt clean, so no row
@@ -133,6 +152,19 @@ export type Database = {
           created_at?: string
           last_used_at?: string | null
           counter?: number
+        }
+      >
+      passkey_requests: Table<
+        PasskeyRequestRow,
+        Omit<
+          PasskeyRequestRow,
+          'id' | 'requested_at' | 'counter' | 'decided_at' | 'decision'
+        > & {
+          id?: string
+          requested_at?: string
+          counter?: number
+          decided_at?: string | null
+          decision?: 'approved' | 'rejected' | null
         }
       >
       webauthn_challenges: Table<

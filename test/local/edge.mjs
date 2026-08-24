@@ -184,24 +184,30 @@ async function main() {
 
   console.log('\n- two phones race for the same roll number -')
   //
-  // Under device binding exactly one phone could win: the row held a single
-  // device id. Passkeys are one-to-many on purpose, so all three succeed — and
-  // that is the intended behaviour, not a regression. What must still hold is
-  // that three simultaneous claims produce three distinct credentials for one
-  // student and exactly one attendance row.
+  // Exactly one may win. Checking for an existing credential and then inserting
+  // one is two statements, and three simultaneous claims all passed the check
+  // before any of them wrote — two credentials landed. The claim is now a
+  // guarded update on students.passkey_claimed, so Postgres picks the winner.
   const raceRoll = rollOf(5)
   const raced = await Promise.all([phone(BASE), phone(BASE), phone(BASE)].map((p) =>
     p.register(session.id, tok(), raceRoll)
   ))
   const won = raced.filter((r) => r.data?.status === 'REGISTERED').length
-  check('all three phones register for that student', won === 3, `${won} succeeded`)
+  check('exactly one phone wins the claim', won === 1, `${won} succeeded`)
+  check(
+    'the losers are queued for approval, not silently dropped',
+    raced.filter((r) => r.data?.error === 'NEEDS_APPROVAL').length === 2,
+    JSON.stringify(raced.map((r) => r.data?.status ?? r.data?.error))
+  )
+  // One pending row per student, so a single roll number cannot flood the queue.
+  check('at most one request is kept for that student', (await count('passkey_requests')) === 1)
   const raceStudent = students.find((r) => r.roll_no === raceRoll)
   check(
-    'three distinct credentials, no duplicates',
-    (await count('student_credentials', `student_id=eq.${raceStudent.id}`)) === 3
+    'one credential, not two',
+    (await count('student_credentials', `student_id=eq.${raceStudent.id}`)) === 1
   )
   check(
-    'and still exactly one attendance row for them',
+    'and exactly one attendance row for them',
     (await count('attendance', `session_id=eq.${session.id}&student_id=eq.${raceStudent.id}`)) === 1
   )
 

@@ -113,6 +113,10 @@ export async function one(table, query) {
  */
 export async function resetToRoster() {
   await remove('webauthn_challenges', 'challenge=not.is.null')
+  // Decided requests are deliberately kept for a fortnight in production —
+  // a refused claim is evidence of an attempted proxy. A test reset clears
+  // them anyway, or counts carry over between suites.
+  await remove('passkey_requests', 'id=not.is.null')
   await remove('student_credentials', 'id=not.is.null')
   await remove('attendance', 'session_id=not.is.null')
   await remove('audit_log', 'id=gt.0')
