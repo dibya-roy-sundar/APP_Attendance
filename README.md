@@ -359,7 +359,7 @@ sequenceDiagram
   V->>P: UPSERT attendance, source manual
   V->>P: audit_log OVERRIDE_MARK, one row per student, with actor
   A->>B: Extend / stop
-  B->>V: PATCH /api/sessions/state
+  B->>V: POST /api/sessions/state
   Note over P: only is_open and expires_at move.<br/>opened_at stays as the record of when the class began
   A->>B: Download .xlsx
   B->>V: GET /api/export
