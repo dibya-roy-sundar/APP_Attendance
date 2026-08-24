@@ -832,7 +832,7 @@ async function main() {
 
     // The honest case still works: a phone with no passkey and no session,
     // enrolling a roll number nobody holds. This is also the residual gap —
-    // see README, "What none of this fixes".
+    // see docs/identity.md, "What none of this fixes".
     const fresh = phone(BASE)
     const ok2 = await fresh.register(session.id, tok(), roster[2].roll_no)
     check('a genuinely new phone still enrols normally', ok2.status === 200, JSON.stringify(ok2.data).slice(0, 70))

@@ -3,7 +3,7 @@ import { db } from '@/lib/supabase'
 import { listStudents } from '@/lib/data'
 
 /**
- * Passkeys are the app's identity. See README for why this replaced the
+ * Passkeys are the app's identity. See docs/identity.md for why this replaced the
  * localStorage UUID and the httpOnly cookie before it, and why neither
  * Microsoft sign-in nor an emailed OTP was the answer.
  *

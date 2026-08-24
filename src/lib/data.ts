@@ -221,8 +221,8 @@ export async function getStudentByRollNo(rollNo: string): Promise<StudentRow | n
  *
  * A passkey lives in the OS credential store instead, survives all three, and
  * cannot be forwarded: no page can read the private key, and it moves between a
- * student's own devices only inside the provider's encrypted sync. See README,
- * "Why identity moved from localStorage to a cookie to passkeys".
+ * student's own devices only inside the provider's encrypted sync. See
+ * docs/identity.md for why each earlier design was replaced.
  *
  * export async function getStudentByDevice(deviceId: string): Promise<StudentRow | null> {
  *   const { data, error } = await db()

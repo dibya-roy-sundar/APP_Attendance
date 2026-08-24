@@ -11,7 +11,7 @@ import { useCallback, useRef, useState } from "react";
  * docs/superseded/ScanClient.device-binding.tsx. It identified a student by a
  * random UUID in localStorage, which Safari deletes after about a week idle, and
  * which an installed home-screen web app cannot see because iOS gives it a
- * separate storage container. See README for the whole history.
+ * separate storage container. See docs/identity.md for the whole history.
  *
  * Two things have to be true to be marked present, and neither substitutes for
  * the other: a passkey signature says *who*, and the rotating token in the QR

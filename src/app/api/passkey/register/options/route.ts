@@ -94,7 +94,7 @@ export async function POST(req: Request) {
     // therefore collect a passkey for every classmate who had not enrolled yet
     // and mark all of them present for the rest of the term. That was found by
     // reproducing it: five students, one handset, nothing in the approval
-    // queue. See README, "One phone, many roll numbers".
+    // queue. See docs/security.md, "One phone, many roll numbers".
     excludeCredentials: classCredentials.map((c) => ({
       id: c.credential_id,
       transports: (c.transports ?? undefined) as never,

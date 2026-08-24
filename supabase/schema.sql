@@ -6,7 +6,7 @@
 -- record. If the schema changes again before the app carries data worth
 -- keeping, edit this file and re-run reset.sql — do not add a migration.
 --
--- Identity is a passkey. See README, "Why identity moved from localStorage, to
+-- Identity is a passkey. See docs/identity.md, "Why identity moved from localStorage, to
 -- a cookie, to passkeys", for the two designs that came before and the specific
 -- reason each failed. There are deliberately no device_id columns anywhere.
 
@@ -49,7 +49,7 @@ create table if not exists attendance (
 -- the reasoning is there, next to the index that enforces it.
 --
 -- This was first built one-to-many, so that moving from iPhone to Android
--- needed nobody's permission. See README, "Lost or wiped phone", for the attack
+-- needed nobody's permission. See docs/running-a-class.md, "Lost or wiped phone", for the attack
 -- that made that untenable.
 create table if not exists student_credentials (
   id            uuid primary key default gen_random_uuid(),
