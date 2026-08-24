@@ -639,11 +639,31 @@ identity by design, and the AAGUID names a model rather than a handset. So this
 stops a student with a phone, which is the threat here, and does not stop someone
 writing their own client.
 
+**Verified on Chromium only, and it cannot be otherwise in CI.** Playwright's
+virtual authenticator is a Chrome DevTools Protocol feature, so WebKit has no way
+to hold a credential and the registration ceremony is unreachable there. Every
+statement about iPhone behaviour in this section is therefore an inference from
+Chromium plus the specification. **It wants confirming on a real iPhone**, and it
+is the single most valuable thing left to test by hand.
+
 **2. The screen stops guessing.** A failed prompt now says "Not confirmed" and
 offers **Try again**. Enrolment is a separate, deliberate tap, and it is not
 offered at all when a local flag says this phone has already been enrolled. The
 flag is clearable, so it is an affordance rather than a control — its job is to
 stop a cancelled prompt from *handing over* the form.
+
+This layer needs no authenticator, so unlike layer 1 it **is** checked on WebKit
+as well as Chromium — eight assertions per engine, on the iPhone 14 and Pixel 7
+presets. That matters, because until it was added the scan screen had never once
+been rendered in WebKit by any suite: the whole passkey journey was Chromium-only
+and every claim about Safari was an inference.
+
+One measured difference between the engines, and the reason not to build on it:
+with no authenticator attached, `navigator.credentials.get()` rejects with
+**`NotAllowedError` on WebKit** and **`NotSupportedError` on Chromium**. The
+client catches any exception rather than matching on the name, so both behave
+identically. Matching on names here would have produced a bug on exactly one
+platform.
 
 **3. The server queues cross-student claims.** Enrolling a roll number from a
 browser that already holds a session for a *different* student is never the
@@ -1291,7 +1311,7 @@ scrollbars — follow the theme too.
 ### Mobile and PWA
 
 ```bash
-npm run e2e:mobile              # 171 checks across six phone sizes
+npm run e2e:mobile              # 509 checks across six phone sizes, both themes
 npm run e2e:mobile -- --shots   # also writes screenshots per device
 ```
 
@@ -1367,11 +1387,35 @@ an admin tap, truncated JSON, SQL-looking text in the reason field, a class that
 runs past midnight, grants that expire or are deleted mid-use, and brute-forced
 passwords.
 
+### Which engine proves what
+
+Not every suite can reach every layer, and the gaps are worth stating rather than
+leaving to be assumed from a green summary.
+
+| | Chromium | WebKit / iOS | Real handset |
+|---|---|---|---|
+| Layout, contrast, tap targets | ✅ mobile audit | ✅ mobile audit | — |
+| Admin session, QR, grid, export | ✅ | ✅ | — |
+| Scan screen when the prompt fails | ✅ | ✅ | — |
+| Registering and signing in with a passkey | ✅ virtual authenticator | ❌ **impossible** | — |
+| `excludeCredentials` refusal | ✅ | ❌ **impossible** | ❌ **not done** |
+| Synced passkey following an account | ❌ | ❌ | ❌ **not done** |
+
+The two "impossible" rows are not laziness. Playwright's virtual authenticator is
+a Chrome DevTools Protocol feature; WebKit has no equivalent, so no credential
+can exist there and the ceremony cannot run. The bottom row cannot be tested by
+any harness, because a virtual authenticator has no account to sync through.
+
+So: **everything about how a passkey behaves on an iPhone is currently an
+inference** from Chromium plus the specification. The screen's behaviour around a
+failed prompt is not — that is checked on both engines, and it is where the
+reported bug actually lived.
+
 ### End-to-end, against a real database
 
-The build spec's test checklist is automated — 87 checks covering token rotation,
-enrollment races, concurrent scans, backdated sessions, `/me` isolation, the
-audit log, and the export.
+The build spec's test checklist is automated — 239 checks covering token
+rotation, enrolment races, concurrent scans, backdated sessions, `/me` isolation,
+the audit log, and the export.
 
 Point it at any running instance plus that instance's database:
 
@@ -1384,8 +1428,8 @@ npm run e2e
 
 Override `BASE_URL` to test a deployed instance instead of localhost.
 
-**It deletes data.** Every run clears `sessions`, `attendance` and `audit_log`
-and unbinds every device, so run it against a scratch project or before the term
+**It deletes data.** Every run clears `sessions`, `attendance`, `audit_log` and
+every passkey, so run it against a scratch project or before the term
 starts — never against a database holding real attendance. As a safeguard it
 refuses to start if `attendance` already has rows; pass `E2E_CONFIRM_WIPE=1` to
 override that deliberately.

@@ -438,6 +438,83 @@ async function passkeyJourney(sessionInfo, adminCookie) {
   }
 }
 
+
+/**
+ * What can be checked on WebKit, and what cannot.
+ *
+ * Playwright's virtual authenticator is a Chrome DevTools Protocol feature, so
+ * WebKit has no way to hold a credential — the whole registration ceremony is
+ * unreachable there. For a long time that meant the scan screen was never
+ * rendered in WebKit at all, and every claim about iPhone behaviour was an
+ * inference from Chromium.
+ *
+ * The layer that does *not* need an authenticator is testable, and it is the one
+ * the reported bug lived in: what the screen does when the ceremony fails. So
+ * that is checked on both engines here.
+ *
+ * Measured difference worth knowing: with no authenticator attached,
+ * `navigator.credentials.get()` rejects with NotAllowedError on WebKit and
+ * NotSupportedError on Chromium. The client catches any exception rather than
+ * matching on names, which is why both engines behave the same — and is the
+ * reason not to start matching on them.
+ *
+ * Still unverified anywhere but Chromium, and unverifiable in CI: the
+ * excludeCredentials refusal. That needs a real iPhone.
+ */
+async function scanScreenJourney(engineName, engine, phoneName, session) {
+  console.log(`\n── ${engineName}: what the scan screen does when the prompt fails ──`)
+  const browser = await engine.launch()
+  const context = await browser.newContext({ ...devices[phoneName] })
+  const page = await context.newPage()
+  const scanUrl = () =>
+    `${BASE}/m?s=${session.id}&t=${tokenFor(session.secret, session.id, session.window_seconds)}`
+
+  await page.goto(scanUrl(), { waitUntil: 'networkidle' })
+  check(
+    `${engineName}: passkeys are offered, not refused as unsupported`,
+    (await page.getByRole('button', { name: 'Mark me present' }).count()) === 1,
+    (await page.locator('h1').first().innerText()).trim()
+  )
+  check(
+    `${engineName}: PublicKeyCredential is present`,
+    await page.evaluate(() => typeof window.PublicKeyCredential === 'function')
+  )
+
+  // No authenticator on this engine, so the assertion fails — the same event as
+  // a cancelled prompt, which is the ambiguity the bug exploited.
+  await page.getByRole('button', { name: 'Mark me present' }).click()
+  await page.waitForSelector('text=Not confirmed', { timeout: 30000 })
+  check(`${engineName}: a failed prompt lands on Not confirmed, not the form`, true)
+  check(
+    `${engineName}: no roll number field is shown`,
+    (await page.getByLabel('Roll number').count()) === 0
+  )
+  check(
+    `${engineName}: Try again is the primary action`,
+    await page.getByRole('button', { name: 'Try again' }).isVisible()
+  )
+  check(
+    `${engineName}: enrolling is offered, since nothing says this phone is set up`,
+    (await page.getByRole('button', { name: 'I have not set up this phone yet' }).count()) === 1
+  )
+
+  // And with the phone marked as enrolled, the way in disappears.
+  await page.evaluate(() => localStorage.setItem('att_enrolled', '1'))
+  await page.goto(scanUrl(), { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Mark me present' }).click()
+  await page.waitForSelector('text=Not confirmed', { timeout: 30000 })
+  check(
+    `${engineName}: an enrolled phone is offered no way to enrol again`,
+    (await page.getByRole('button', { name: 'I have not set up this phone yet' }).count()) === 0
+  )
+  check(
+    `${engineName}: still no roll number field`,
+    (await page.getByLabel('Roll number').count()) === 0
+  )
+
+  await browser.close()
+}
+
 async function main() {
   if (!ADMIN_PASSWORD) throw new Error('ADMIN_PASSWORD not set')
   await cleanSlate()
@@ -464,6 +541,15 @@ async function main() {
     body: JSON.stringify({ minutes: 45, windowSeconds: 15 }),
   })
   const live = await one('sessions', 'select=id,secret,window_seconds&order=opened_at.desc&limit=1')
+
+  // Both engines for the part that does not need an authenticator, then
+  // Chromium alone for the part that does.
+  for (const [name, engine, phone] of [
+    ['WebKit (iOS)', webkit, 'iPhone 14'],
+    ['Chromium (Android)', chromium, 'Pixel 7'],
+  ]) {
+    await scanScreenJourney(name, engine, phone, live)
+  }
 
   await passkeyJourney(live, jar)
 
