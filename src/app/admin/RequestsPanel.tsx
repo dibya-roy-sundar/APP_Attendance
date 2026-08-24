@@ -2,6 +2,17 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
+/** "4 minutes ago", "3 days ago" — enough to judge, no more. */
+function describeAge(iso: string): string {
+  const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60_000))
+  if (minutes < 2) return 'just now'
+  if (minutes < 60) return `${minutes} minutes ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+  const days = Math.round(hours / 24)
+  return `${days} day${days === 1 ? '' : 's'} ago`
+}
+
 type Request = {
   id: string
   studentId: string
@@ -10,6 +21,7 @@ type Request = {
   deviceLabel: string | null
   requestedAt: string
   markedToday: boolean
+  existingLastUsed: string | null
 }
 
 /**
@@ -121,7 +133,12 @@ export function RequestsPanel({
               }).format(new Date(r.requestedAt))}
             </p>
 
-            {/* The fact that decides it, stated rather than implied. */}
+            {/*
+              The two facts that separate a lost phone from a proxy attempt,
+              stated rather than implied. Both are one-sided: they can make a
+              claim look wrong, never prove it right. When neither is damning,
+              the answer is in the room — ask the student to come to the front.
+            */}
             <p
               className={`mt-1.5 text-xs font-medium ${
                 r.markedToday
@@ -132,6 +149,11 @@ export function RequestsPanel({
               {r.markedToday
                 ? 'Already marked present today — so this phone is not the one that marked them.'
                 : 'Not marked present today.'}
+            </p>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+              {r.existingLastUsed
+                ? `Their current phone last worked ${describeAge(r.existingLastUsed)}.`
+                : 'Their current phone has never been used to sign in.'}
             </p>
 
             {isPrimary ? (

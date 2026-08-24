@@ -88,6 +88,16 @@ export const remove = (table, query) => {
   return rest(`${table}?${query}`, { method: 'DELETE' })
 }
 
+/**
+ * Writes a row directly, for setting up a state the app cannot reach quickly —
+ * a request that is already a fortnight old, say. Guarded like the others: it
+ * writes to the same database production uses.
+ */
+export const insert = (table, body) => {
+  assertWipeAllowed('INSERT', table, JSON.stringify(body).slice(0, 60))
+  return rest(table, { method: 'POST', body: JSON.stringify(body) })
+}
+
 export async function count(table, query = '') {
   const rows = await select(table, query ? `select=*&${query}` : 'select=*')
   return rows.length

@@ -6,7 +6,7 @@
  *   node test/local/edge.mjs
  */
 import { createHmac } from 'node:crypto'
-import { count, one, patch, remove, resetToRoster, select } from './db.mjs'
+import { count, insert, one, patch, remove, resetToRoster, select } from './db.mjs'
 import { phone } from './student.mjs'
 
 // localhost, not 127.0.0.1: WebAuthn will not accept an IP address as a
@@ -530,6 +530,93 @@ async function main() {
   // students to whichever one the admin had open. Register on one, open the
   // other, and you are "Not registered" while the database says your roll
   // number is claimed — a device reset each time, looking like lost data.
+  // -- the approval queue keeps evidence, and tidies itself ------------------
+  //
+  // There is no scheduler. Cleanup runs when the admin opens the panel, which
+  // is the only place the queue is read — proportionate for a table that holds
+  // a handful of rows a term, and one less thing that can silently stop
+  // running. Rejected rows are kept for a fortnight on purpose: a refused claim
+  // is the record of an attempted proxy.
+  console.log('\n- the queue keeps evidence for a fortnight, then tidies -')
+  {
+    const DAY = 86_400_000
+    const seed = (studentId, credentialId, agoMs, decision) =>
+      insert('passkey_requests', {
+        student_id: studentId,
+        credential_id: credentialId,
+        public_key: 'x',
+        requested_at: new Date(Date.now() - agoMs).toISOString(),
+        expires_at: new Date(Date.now() - agoMs + 3 * DAY).toISOString(),
+        ...(decision ? { decision, decided_at: new Date(Date.now() - agoMs).toISOString() } : {}),
+      })
+
+    await remove('passkey_requests', 'id=not.is.null')
+    await seed(students[30].id, 'age-1h', 3_600_000, null)
+    await seed(students[31].id, 'age-5d', 5 * DAY, 'rejected')
+    await seed(students[32].id, 'age-13d', 13 * DAY, 'rejected')
+    await seed(students[33].id, 'age-20d', 20 * DAY, 'rejected')
+    await seed(students[34].id, 'age-40d', 40 * DAY, 'approved')
+    check('five rows seeded across a range of ages', (await count('passkey_requests')) === 5)
+
+    const queue = await api('/api/passkey/requests', { cookie: admin })
+    check('only the undecided, unexpired one is offered', queue.data.requests.length === 1)
+    check('and it is the fresh one', queue.data.requests[0].rollNo === students[30].roll_no)
+
+    const kept = (await select('passkey_requests', 'select=credential_id')).map((r) => r.credential_id)
+    check('rows past a fortnight are gone', !kept.includes('age-20d') && !kept.includes('age-40d'), kept.join(','))
+    check(
+      'refused rows inside the fortnight are kept as evidence',
+      kept.includes('age-5d') && kept.includes('age-13d'),
+      kept.join(',')
+    )
+    await remove('passkey_requests', 'id=not.is.null')
+  }
+
+  // -- only the instructor may decide ---------------------------------------
+  console.log('\n- a deputy sees the queue but cannot decide it -')
+  {
+    const grant = await api('/api/grants', {
+      method: 'POST',
+      body: { studentId: students[2].id, hours: 4 },
+      cookie: admin,
+    })
+    const deputyLogin = await api('/api/admin/login', {
+      method: 'POST',
+      body: { password: grant.data.code },
+    })
+    const deputy = cookieOf(deputyLogin.res)
+
+    await insert('passkey_requests', {
+      student_id: students[35].id,
+      credential_id: 'deputy-probe',
+      public_key: 'x',
+      expires_at: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+    })
+
+    const seen = await api('/api/passkey/requests', { cookie: deputy })
+    check('a deputy can see the queue', seen.status === 200 && seen.data.requests.length === 1)
+    check(
+      'and it carries the question, never the credential',
+      !JSON.stringify(seen.data).includes('public_key') &&
+        !JSON.stringify(seen.data).includes('deputy-probe'),
+      JSON.stringify(seen.data).slice(0, 100)
+    )
+    const decide = await api('/api/passkey/requests/decide', {
+      method: 'POST',
+      body: { requestId: seen.data.requests[0].id, approve: true },
+      cookie: deputy,
+    })
+    check('but cannot approve one', decide.status === 403, `${decide.status}`)
+    const wipe = await api('/api/passkey/remove', {
+      method: 'POST',
+      body: { studentId: students[35].id },
+      cookie: deputy,
+    })
+    check('nor remove a passkey', wipe.status === 403, `${wipe.status}`)
+    await remove('passkey_requests', 'id=not.is.null')
+    await remove('admin_grants', 'id=not.is.null')
+  }
+
   console.log('\n- the QR points at one fixed origin -')
   {
     // Reuse the session this suite has been driving; earlier cases may have

@@ -172,8 +172,25 @@ export type PendingRequest = {
   deviceLabel: string | null
   requestedAt: string
   expiresAt: string
-  /** True when that student already has a mark today — a hint, not a verdict. */
+  /**
+   * Whether that student already has a mark today.
+   *
+   * A one-sided tell. True is close to damning — somebody signed in as them
+   * successfully, so the registered passkey works and is in the room, and a
+   * claim from a different phone is very unlikely to be theirs. False is only
+   * consistent with a lost phone; it does not confirm one, because an absent
+   * student's roll number looks exactly the same.
+   */
   markedToday: boolean
+  /**
+   * When the passkey they already hold was last used, if ever.
+   *
+   * The more direct question: is the old phone still working? Used minutes ago
+   * means it is, and a claim is suspect. Never used, or weeks ago, is what a
+   * genuinely lost phone looks like. Null when it has never been used since
+   * registration.
+   */
+  existingLastUsed: string | null
 }
 
 /**
@@ -229,6 +246,18 @@ export async function pendingRequests(classDate: string | null): Promise<Pending
   const students = await listStudents()
   const byId = new Map(students.map((s) => [s.id, s]))
 
+  // When each of these students last used the passkey they already hold. One
+  // query for the whole queue rather than one per row.
+  const held = await db()
+    .from('student_credentials')
+    .select('student_id, last_used_at')
+    .in(
+      'student_id',
+      data.map((r) => r.student_id)
+    )
+  if (held.error) throw held.error
+  const lastUsed = new Map((held.data ?? []).map((c) => [c.student_id, c.last_used_at]))
+
   // Whether they are already marked today is the single most useful hint: a
   // student who has been marked present and is now asking to move their passkey
   // is a very different story from one who has not turned up.
@@ -261,6 +290,7 @@ export async function pendingRequests(classDate: string | null): Promise<Pending
         requestedAt: r.requested_at,
         expiresAt: r.expires_at,
         markedToday: marked.has(r.student_id),
+        existingLastUsed: lastUsed.get(r.student_id) ?? null,
       },
     ]
   })
