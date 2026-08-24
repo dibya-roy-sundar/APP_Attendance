@@ -387,6 +387,7 @@ Every one was either measured or arrived at by breaking the previous version.
 | 7 | **An approval queue, not a reset button.** | A lost phone and a stranger's phone are indistinguishable to the server. So a person decides, and every refused claim becomes evidence with a device and a time on it. | [Lost or wiped phone](#lost-or-wiped-phone) |
 | 8 | **The queue shows facts, not guesses.** No "already marked today", no "old phone last used". | Neither discriminates: a proxy attempt happens while the student is absent, and so does a genuine lost phone. A hint that only fires in the rare case invites trusting it instead of asking the student. | [The phone-changes panel](#the-phone-changes-panel) |
 | 9 | **Registration is authorised by presence**, not by an admin-controlled window. **Partly wrong** — the window was removed on reasoning that did not hold, and the gap it left is still open. | Holding a live QR token does mean being in the room, and that part stands. But the case the window defended was called "self-correcting" when it is not: the victim is marked *present*, so nobody complains and nothing surfaces. | [Registration, and the window that was wrong to remove](#registration-and-the-window-that-was-wrong-to-remove) |
+| 17 | **The private-browsing enrolment route is accepted, not fixed.** No enrolment gate. | Every remaining fix costs the instructor time in every class, or an email pipeline, against an attack that is deliberate, limited to roll numbers nobody has enrolled, self-revealing when the real student tries to enrol, and committed in a room with the instructor in it. Detection is proportionate here; prevention is not. Decided 2026-08-25. | [What is accepted, and why](#what-is-accepted-and-why) |
 | 16 | **One passkey per device**, via `excludeCredentials` carrying the whole class. | `UNIQUE(student_id)` gave one passkey per student and nothing gave one per device, so a single handset could collect a passkey for every unenrolled classmate and mark them present all term. Enforced by the authenticator, so it stops a phone and not a script. | [One phone, many roll numbers](#one-phone-many-roll-numbers) |
 | 10 | **Housekeeping runs behind the response** via `after()`, with no cron. | Both swept tables are self-limiting by query, so the deletes are tidying, not correctness — and have no business costing a student a round trip. One less thing that can silently stop running. | [The phone-changes panel](#the-phone-changes-panel) |
 | 11 | **RLS on with no policies.** Every server query uses the service role. | A leaked anon key then grants nothing at all, rather than whatever the policies happen to permit. | [Permissions](#permissions) |
@@ -671,7 +672,7 @@ innocent first-time case, whatever else it is. It goes to the approval queue wit
 an audit line saying so, rather than being written. This catches the scripted
 caller from layer 1 — as long as it keeps its cookie.
 
-#### What is still open
+#### What is accepted, and why
 
 A caller with **no cookie, no real authenticator, and a roll number nobody has
 enrolled** can still claim it. Proved, deliberately, so it is not a surprise:
@@ -681,25 +682,74 @@ claiming a third roll number: 200 REGISTERED
 ^ THIS IS THE RESIDUAL GAP
 ```
 
-The same is true, without any scripting, of a **second physical device**: a
-laptop or an old phone with an empty keychain can enrol one unclaimed roll
-number.
+**A private-browsing window is the easy way in, and this was understated here
+before.** It was described as needing "a second physical device: a laptop or an
+old phone" — as though it took equipment. It does not. Confirmed on a real phone:
+in a Chrome incognito window, cancel the prompt, enter an unenrolled roll number,
+and a passkey is created and that student is marked present.
 
-Only gating first-time enrolment closes this, which means the window that was
-deleted — now with a reason that actually holds. Two shapes of it:
+All three layers fail at once, and for one reason: **every one of them keys off
+device state, and private browsing is designed to present as a new device.**
 
-- **An enrolment window on the session.** Open it for the first class, watch the
-  count reach the roster size, close it. Later joiners then go through the
-  approval queue like anyone else. Cheap, and leaves one supervised window of
-  exposure.
-- **Approve every first enrolment.** No window at all, at the cost of roughly one
-  tap per student during the first class.
+| Layer | Why it does not fire in private browsing |
+|---|---|
+| `excludeCredentials` → `InvalidStateError` | The window does not surface the profile's saved passkeys to the page, so the authenticator has nothing to match the exclusion list against. It sees an empty keychain. |
+| The local `att_enrolled` flag | Fresh `localStorage`, so nothing says this phone is enrolled and the enrol button is offered — correctly, by its own logic. |
+| Session cookie naming another student | No cookies carry over, so there is no cross-student claim to catch. |
 
-Neither is implemented. Until one is, treat the first class as the moment that
-matters: **the enrolment list is worth checking against who was actually in the
-room**, because that is when every roll number is unclaimed and therefore
-claimable. `audit_log` holds every `PASSKEY_REGISTERED` with a timestamp and a
-device label for exactly that check.
+This is not a defect in any of the three. It is the shape of the problem: nothing
+observable from the browser can distinguish "a student's first phone" from "the
+same student's phone pretending to be new", because the browser is deliberately
+built to make those identical. Only something the *server* controls can tell them
+apart, and the only such thing here is whether enrolment is open at all.
+
+The same applies, less conveniently, to a second physical device or a script.
+
+Only gating first-time enrolment closes this. Two shapes were designed and
+costed:
+
+- **An enrolment window on the session** — a toggle, default closed, with
+  unenrolled roll numbers going to the approval queue while it is shut. Leaves one
+  supervised hour of exposure instead of a whole term.
+- **Approve every first enrolment** — no window at all, at the cost of roughly 47
+  approvals during the first class.
+
+**Neither is implemented, and that is a decision rather than a gap in the
+backlog.** Taken on 2026-08-25, after the private-browsing route was confirmed on
+a real phone: the residual risk is accepted and the app ships without an enrolment
+gate.
+
+The reasoning, so it can be revisited rather than rediscovered:
+
+- The exposure needs somebody to deliberately open a private window, cancel a
+  biometric prompt, and type a classmate's roll number. That is not a mistake
+  anybody makes; it is a decision to commit fraud, in a room with the instructor
+  in it.
+- It only works on roll numbers **nobody has enrolled**, which after the first
+  class means absent students — and it locks the real student out, so it surfaces
+  the moment they try to enrol.
+- The controls that remain are proportionate to a class of 47 with the instructor
+  physically present, and they cost nothing:
+  - `audit_log` records every `PASSKEY_REGISTERED` with a time and a device label,
+    so the enrolment list can be checked against who was in the room.
+  - The grid reports how many students have enrolled, so an enrolment appearing in
+    week six is visible.
+  - A hijacked roll number locks its owner out, and their claim lands in the
+    approval queue with the original device's details beside it.
+  - The count on the grid against the number of occupied seats catches the whole
+    class of proxy attempts, this one included.
+
+What tipped it: every remaining fix costs the instructor real time in every class
+— or an email pipeline — to defend against an attack that is deliberate, bounded
+to absent students, self-revealing when the victim returns, and committed in front
+of the person keeping the register. **Revisit this if the roster grows past a size
+one person can see, or if the register ever carries consequences worth committing
+fraud for.**
+
+One thing does make the private-browsing route noisier than it looks. Whatever it
+enrols, our `student_credentials` row persists — so that roll number is now taken,
+and the real student is locked out and has to go through the approval queue. If
+they ever try to enrol, it surfaces. If they are absent all term, it does not.
 
 ### A student joins late
 
@@ -1043,15 +1093,17 @@ classes** — and project the QR large, because a fast rotation is unforgiving o
 a code nobody at the back can read. Beyond that, the count on the grid against
 the number of occupied seats is a better check than any cryptography.
 
-**Claiming a roll number nobody has enrolled.** A device with an empty keychain —
-a second phone, a laptop, or a script — can still enrol one unclaimed roll number
-while a session is live, and is then marked present as that student. One phone can
-no longer collect several, and a phone that has already enrolled cannot enrol
-another at all, but the first claim on an unclaimed number is not gated. See
-[One phone, many roll numbers](#one-phone-many-roll-numbers) for what was closed,
-what was not, and the two ways to close the rest. Until one of them is built, the
-**first class of the term is the exposure**, because that is when every roll
-number is unclaimed: check the enrolment list afterwards against who was in the
+**Claiming a roll number nobody has enrolled.** A device with an empty keychain
+can enrol one unclaimed roll number while a session is live, and is then marked
+present as that student. The easiest route is a private-browsing window, which
+presents as a new device by design. One phone can no longer collect several, and a
+normal window that has already enrolled cannot enrol another at all, but the first
+claim on an unclaimed number is not gated — and, as of 2026-08-25, deliberately
+will not be. See [What is accepted, and why](#what-is-accepted-and-why) for the
+reasoning and the detection that stands in its place.
+
+In practice: **the first class of the term is the exposure**, because that is when
+every roll number is unclaimed. Check the enrolment list against who was in the
 room.
 
 ## How the security works
